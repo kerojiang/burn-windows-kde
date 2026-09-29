@@ -137,7 +137,7 @@
 
 ### 3.5 关键设计事实（链路决定，非取舍）
 
-1. **19 个常驻加载**：占位被卸载时其 JS 不运行，没有合法通道反向卸载 19 个；而 19 个常驻、只查占位状态的链路完全通畅。关闭态代价 = 每次窗口事件 19 次 `isEffectLoaded` 查询后即 return（微秒级，无动画开销）。
+1. **19 个常驻加载**：占位被卸载时其 JS 不运行，没有合法通道反向卸载 19 个；而 19 个常驻、只查占位状态的链路完全通畅。关闭态代价（实测）：每次窗口事件 19 次 `isEffectLoaded` 查询后即 return（微秒级，无动画开销）；内存驻留 = **5.8 MB**（2026-09-29 16:29 本机对照实测：19 个加载 225.6 MB → 全卸载 219.8 MB → 重载 224.3 MB，VmRSS 差值，下界口径）。
 2. **下拉选中的提交时序**：`setData` 只改内存 `changed` 标记（`effectsmodel.cpp:185-190`），落盘仅发生在点应用/确定 —— 与 D5 用户观察一致。
 3. **选中占位不误伤内置项**：当前 fade/scale 均已是 Disabled（`changed=false`，save 跳过），且 19 个已移出组（3.3 的组名改写），同组仅剩 fade/scale/占位 → 键变化仅 `bmw_randomEnabled=true` 一项。
 
@@ -286,6 +286,7 @@ if (!effects.isEffectLoaded(BMW_PLACEHOLDER_ID)) return false;
 | 参数渲染 | 自渲染（main.xml 驱动） | D7 |
 | 旧入口 | 移除，齿轮单一入口 | D8 |
 | 占位条目显示名 | `随机特效 [Burn-My-Windows]` | D9（spec 审阅时确定） |
+| 关闭态 19 个加载策略 | **维持常驻加载**，不引入 daemon 扇出 | 用户在 5.8 MB 对照实测（§3.5-1）后确认。备选 daemon 路径经第三轮源码调研判定成立（C1=占位顶层 `effects.loadEffect ×19` 同步加载 + C/E=systemd --user 监听 `/kwinrc ConfigChanged` 扇出），但 A（占位卸载 JS 钩子）与 B（19 个自卸载）**不成立**：`~ScriptedEffect() = default`（scriptedeffect.cpp:227）无任何 JS 卸载钩子；effect JS 引擎无 `callDBus` 无 timer（注入表 scriptedeffect.cpp:260-296），同步自卸 = JS 栈内销毁自身引擎且 `destroyEffect` 无重入保护（effecthandler.cpp:1199-1221）。若将来内存敏感需重启该方向，以此为基线 |
 | 19 个加载策略 | 常驻加载 + 同步查占位 | 3.5-1（链路唯一解） |
 | metadata 改造 | internal + 改组名双保险 | 3.3（调研表述分歧的消解） |
 | 方案 | A（占位 + isEffectLoaded） | 第 2 章 |
