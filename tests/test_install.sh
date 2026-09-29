@@ -60,6 +60,13 @@ pass() {
   printf '  ✔ %s\n' "$1"
 }
 
+# 与 test_e2e.sh 同款：条件守卫（如 kcm/build 已有产物时避免覆盖）走此分支。
+# 缺失定义会让守卫段 command not found 且断言静默不执行（62→58 条之谜，Ruling-16）。
+skip() {
+  SKIP=$((SKIP + 1))
+  printf '  ⊘ %s —— %s\n' "$1" "$2"
+}
+
 assert_eq() {  # assert_eq <actual> <expected> <label>
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3" "期望 [$2] 实际 [$1]"; fi
 }

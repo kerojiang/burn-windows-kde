@@ -5,10 +5,10 @@
 #   bash install.sh --skip-build --skip-sudo && bash install.sh --apply-config
 # 未安装时 test1 判 FAIL、其余用例判 SKIP（TDD 的 RED 语义，不假阴性通过）。
 #
-# 窗口开/关自动化（brief 实测方法）：以 50ms 间隔轮询
-# `qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.activeEffects` 采样；
-# `kwrite &` 启动触发 open（采样 4s，含进程启动延迟）→ `kill -TERM` 触发
-# close（采样 3s）。单轮约 7 秒。
+# 窗口开/关自动化（brief 实测方法）：`kwrite &` 启动触发 open（4s 含进程
+# 启动延迟）→ `kill -TERM` 触发 close（3s）。播放信号按时间窗查询注入的
+# `BMW_PLAY` 日志（journalctl _COMM=kwin_wayland，Ruling-15：activeEffects
+# 静态含本会话播过动画的全部 effect，无法标识「正在动画」）。单轮约 7 秒。
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,45 +43,58 @@ skip() { SKIP=$((SKIP + 1)); printf '  ⊘ %s —— %s\n' "$1" "$2"; }
 assert_eq() { # 实际 期望 标签
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3" "期望 [$2] 实际 [$1]"; fi
 }
-assert_true() { # shell表达式 标签
+assert_true() { # shell表达式 标签 —— 只承载 test 表达式（如 "$N -gt 0"）
   if eval "[ $1 ]"; then pass "$2"; else fail "$2" "条件不成立: $1"; fi
 }
+assert_cmd() { # shell命令 标签 —— 命令类断言（Ruling-14：assert_true 的 [] 包不住命令）
+  if eval "$1"; then pass "$2"; else fail "$2" "命令执行失败: $1"; fi
+}
 
-# 当前 KWin 已加载的 BMW 特效（换行分隔、去重）
+PLACEHOLDER_ID="kwin6_effect_bmw_random"
+KWINRC="$HOME/.config/kwinrc"
+
+# 当前 KWin 已加载的 BMW 池成员（换行分隔、去重）。
+# 排除占位 id —— 它与池成员共享 kwin6_effect_ 前缀，计入会让 LOADED_N==19
+# 的断言变成 20 假失败；占位是开关载体，不属于池成员计数语义。
 loaded_bmw() {
+  qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.loadedEffects 2>/dev/null \
+    | tr ',' '\n' | grep '^kwin6_effect_' | grep -v "^${PLACEHOLDER_ID}\$" | sort -u
+}
+
+# 全量 loadedEffects（含占位）—— 开关检测专用，与 loaded_bmw 语义区分
+loaded_all() {
   qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.loadedEffects 2>/dev/null \
     | tr ',' '\n' | grep '^kwin6_effect_' | sort -u
 }
 
-# 采样窗口期内 activeEffects 中出现过的 BMW 特效
-# $1=时长(秒)  $2=输出文件
-sampler() {
-  local end=$(( $(date +%s) + $1 ))
-  : > "$2"
-  while [ "$(date +%s)" -lt "$end" ]; do
-    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.activeEffects 2>/dev/null \
-      | tr ',' '\n' | grep '^kwin6_effect_' >> "$2"
-    sleep 0.05
-  done
+# 采样时间窗内的 BMW_PLAY 播放日志（Ruling-15：activeEffects 静态含本会话
+# 播过动画的全部 effect，不能标识「正在动画」；注入 winner 分支的
+# console.log 经 QJSEngine ConsoleExtension 进 KWin 进程 journal，
+# 按时间窗事后查询，无 50ms 轮询漏检）。
+# $1=since(HH:MM:SS.mmm)  $2=until  $3=输出文件
+journal_window() {
+  : > "$3"
+  journalctl _COMM=kwin_wayland --since "$1" --until "$2" -o cat --no-pager 2>/dev/null \
+    | grep -o 'BMW_PLAY kwin6_effect_[[:alnum:]_]*' | sed 's/^BMW_PLAY //' >> "$3" || :
 }
 
 # 一轮开/关闭环：$1 = tag
+# 时间锚：t0 启动 kwrite、t1 TERM（close 触发点）、t2 close 窗结束；
+# open 段=[t0,t1]、close 段=[t1,t2]。动画日志在事件后毫秒级落盘，两段
+# 查询都在 t2 之后执行 → 数据已写入 journal。
 one_round() {
-  local tag="$1" kpid s1 s2
-
-  # open 段：采样与窗口启动并行，覆盖启动延迟 + open 动画
-  sampler 4 "$TMP/$tag.open.raw" & s1=$!
+  local tag="$1" kpid t0 t1 t2
+  t0="$(date +%H:%M:%S.%3N)"
   kwrite >/dev/null 2>&1 & kpid=$!
   sleep 4
-  wait "$s1" 2>/dev/null
-
-  # close 段：TERM 后立即采样，最后兜底 KILL（避免裸 wait 挂起）
-  sampler 3 "$TMP/$tag.close.raw" & s2=$!
+  t1="$(date +%H:%M:%S.%3N)"
   kill -TERM "$kpid" 2>/dev/null
   sleep 3
-  wait "$s2" 2>/dev/null
+  t2="$(date +%H:%M:%S.%3N)"
   kill -9 "$kpid" 2>/dev/null
   wait "$kpid" 2>/dev/null
+  journal_window "$t0" "$t1" "$TMP/$tag.open.raw"
+  journal_window "$t1" "$t2" "$TMP/$tag.close.raw"
   return 0
 }
 
@@ -135,11 +148,37 @@ restore_blacklist() {
   fi
 }
 
+# 开关链路（Task 9，Ruling-13）：写键是持久化声明（KWin 启动真相源），
+# 运行时生效靠 DBus loadEffect/unloadEffect —— 实测 kwriteconfig6 --notify
+# 与 /KWin reconfigure 均不触发 KWin 6.7.5 的运行时 load/unload。
+# 轮询 50×0.2s=10s 超时后返回 1，由调用方决定警告还是断言失败。
+random_switch() { # random_switch on|off
+  if [ "$1" = on ]; then
+    kwriteconfig6 --file "$KWINRC" --group Plugins --key "${PLACEHOLDER_ID}Enabled" true
+    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.loadEffect "$PLACEHOLDER_ID" >/dev/null 2>&1 || true
+  else
+    kwriteconfig6 --file "$KWINRC" --group Plugins --key "${PLACEHOLDER_ID}Enabled" false
+    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.unloadEffect "$PLACEHOLDER_ID" >/dev/null 2>&1 || true
+  fi
+  local want="$1" i loaded
+  for i in $(seq 1 50); do
+    loaded="$(loaded_all)"
+    if { [ "$want" = on ] && printf '%s\n' "$loaded" | grep -qx "$PLACEHOLDER_ID"; } || \
+       { [ "$want" = off ] && ! printf '%s\n' "$loaded" | grep -qx "$PLACEHOLDER_ID"; }; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+# 退出兜底：测试结束把开关恢复为关（与安装后默认态一致，避免测试残留开态）
+restore_random_switch() { random_switch off >/dev/null 2>&1 || true; }
+
 # ---------------------------------------------------------------- 前置
 
 echo "=== 前置检查 ==="
 TMP="$(mktemp -d /tmp/bmw-e2e.XXXXXX)"
-trap 'restore_blacklist; rm -rf "$TMP"' EXIT
+trap 'restore_blacklist; restore_random_switch; rm -rf "$TMP"' EXIT
 
 LOADED_N="$(loaded_bmw | wc -l | tr -d ' ')"
 if [ "$LOADED_N" -eq 0 ]; then
@@ -148,6 +187,17 @@ if [ "$LOADED_N" -eq 0 ]; then
 else
   INSTALLED=1
   echo "  已加载 BMW 特效: $LOADED_N 个"
+fi
+
+# 开关前置（Task 9）：占位必须开启 —— 否则注入产物的 enabled 闸判 false，
+# 19 个特效全部不播 → 用例 1-4 假失败。占位未安装时本步超时并打印警告，
+# 后续开关用例按断言失败暴露（RED 语义，不假阴性通过）。
+if [ "$INSTALLED" -eq 1 ]; then
+  if random_switch on; then
+    echo "  占位开关已开启（loadedEffects 含 $PLACEHOLDER_ID）"
+  else
+    echo "  警告：占位开启未生效（KWin 未运行或占位未安装），开关链路用例将失败"
+  fi
 fi
 
 # ================================================================ 1. 随机分布
@@ -219,9 +269,9 @@ if [ "$INSTALLED" -eq 1 ]; then
 
   FIRE_HITS="$(collect_all t3 | grep '^kwin6_effect_fire$' || true)"
   if [ -z "$FIRE_HITS" ]; then
-    pass "黑名单特效 kwin6_effect_fire 从未出现在 activeEffects"
+    pass "黑名单特效 kwin6_effect_fire 从未播放"
   else
-    fail "黑名单特效 kwin6_effect_fire 从未出现在 activeEffects" "出现: $FIRE_HITS"
+    fail "黑名单特效 kwin6_effect_fire 从未播放" "出现: $FIRE_HITS"
   fi
 
   OTHERS="$(collect_all t3 | grep -v '^kwin6_effect_fire$' | grep -c . || true)"
@@ -242,9 +292,9 @@ if [ "$INSTALLED" -eq 1 ]; then
 
   HITS="$(collect_all t4)"
   if [ -z "$HITS" ]; then
-    pass "全黑名单时 activeEffects 不含任何 kwin6_effect_*"
+    pass "全黑名单时无任何 kwin6_effect_* 播放"
   else
-    fail "全黑名单时 activeEffects 不含任何 kwin6_effect_*" "出现: $HITS"
+    fail "全黑名单时无任何 kwin6_effect_* 播放" "出现: $HITS"
   fi
 else
   skip "全黑名单无特效" "前置未安装"
@@ -311,6 +361,29 @@ fi
 echo
 echo "恢复全池状态（Blacklist 置空 + 重新注入）"
 restore_blacklist
+
+# ================================================================ 开关链路三态门控
+# 落点在「恢复全池」之后（Ruling-12）：用例 4 结束时 Blacklist=全池，
+# 开态采样必空；恢复后 Blacklist=空才是开关用例的有效环境。
+echo "=== test_random_switch_gates_playback ==="
+if [ "$INSTALLED" -eq 1 ]; then
+  assert_cmd "random_switch on" "开态：占位进入 loadedEffects"
+  run_rounds t_on 10
+  ON_N="$(collect_all t_on | grep -c . || true)"
+  assert_true "$ON_N -gt 0" "开态：占位开启时产生动画（去重 $ON_N 项）"
+
+  assert_cmd "random_switch off" "关态：占位离开 loadedEffects"
+  run_rounds t_off 10
+  OFF_N="$(collect_all t_off | grep -c '^kwin6_effect_' || true)"
+  assert_eq "$OFF_N" "0" "关态：无任何 kwin6_effect_* 动画（enabled 闸拦截）"
+
+  assert_cmd "random_switch on" "重开：占位回到 loadedEffects"
+  run_rounds t_re 10
+  RE_N="$(collect_all t_re | grep -c . || true)"
+  assert_true "$RE_N -gt 0" "重开：随机播放恢复（去重 $RE_N 项）"
+else
+  skip "开关三态门控" "前置未安装"
+fi
 
 # ================================================================ 6. 黑名单恢复挂在退出钩子上
 echo "=== test_blacklist_restored_on_any_exit ==="

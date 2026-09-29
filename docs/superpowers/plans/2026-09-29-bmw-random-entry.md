@@ -500,6 +500,8 @@ git commit -m "feat(kcm): save 参数段 —— kwinrc [Effect-*] 落盘 + recon
 
 - 前置（`echo "=== 前置检查 ==="` 段内、LOADED_N 检查之前）加：
 
+> ⚠️ 必须同时修既有断言：`loaded_bmw` 按 `kwin6_effect_` 前缀提取，占位 id `kwin6_effect_bmw_random` 以同前缀计入 → `LOADED_N==19` 会变 20 假失败。改法：`loaded_bmw` 的 grep 行加 `grep -v '^kwin6_effect_bmw_random$'` 排除占位（池成员计数语义不变），或 LOADED_N 断言改按 `POOL` 清单逐个核对。
+
 ```bash
 PLACEHOLDER_ID="kwin6_effect_bmw_random"
 random_switch() {  # random_switch on|off —— 写占位键并等 KWin 生效

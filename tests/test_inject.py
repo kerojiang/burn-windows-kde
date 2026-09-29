@@ -136,6 +136,25 @@ def test_helper_block_contains_arbiter_source(effect_dir):
     assert ARBITER_SRC.read_text(encoding="utf-8").strip() in src
 
 
+def test_injection_logs_playback_for_journal_sampling(effect_dir):
+    """播放上报：open/close winner 分支打 BMW_PLAY 日志（e2e 采样信号，Ruling-15）。
+
+    activeEffects DBus 静态含本会话播过动画的全部 effect（实测 19 项常驻），
+    无法区分「正在动画」；注入产物的 console.log 经 QJSEngine ConsoleExtension
+    进 KWin 进程 journal（_COMM=kwin_wayland），是唯一能标识「哪个特效在这次
+    开/关中播放」的信号。日志行必须在 bmwShouldPlay 的 return 拦截之后，
+    即只有仲裁 winner 继续执行时才打。
+    """
+    inject(str(effect_dir), "id", pool="a", blacklist="")
+    src = read_main(effect_dir)
+    assert 'console.log("BMW_PLAY " + BMW_MY_EFFECT_ID);' in src
+    # 日志必须在 return 拦截之后（拦截时不得上报）
+    open_block = src.split("BMW_ARBITER_OPEN_BEGIN")[1].split("BMW_ARBITER_OPEN_END")[0]
+    assert open_block.index('return;') < open_block.index('BMW_PLAY')
+    close_block = src.split("BMW_ARBITER_CLOSE_BEGIN")[1].split("BMW_ARBITER_CLOSE_END")[0]
+    assert close_block.index('return;') < close_block.index('BMW_PLAY')
+
+
 # ---------------------------------------------------------------- metadata 双改造（Task 3）
 
 

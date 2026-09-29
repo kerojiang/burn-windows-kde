@@ -86,6 +86,7 @@ def _open_call() -> str:
         f"    if (!bmwShouldPlay(window, BMW_ROLE_OPEN, BMW_MY_EFFECT_ID, "
         f"BMW_POOL, BMW_BLACKLIST, Math.random, "
         f"effects.isEffectLoaded(BMW_PLACEHOLDER_ID))) {{ return; }}\n"
+        f"    console.log(\"BMW_PLAY \" + BMW_MY_EFFECT_ID);\n"
         f"    // BMW_ARBITER_OPEN_END\n"
     )
 
@@ -96,6 +97,7 @@ def _close_call() -> str:
         f"    if (!bmwShouldPlay(window, BMW_ROLE_CLOSE, BMW_MY_EFFECT_ID, "
         f"BMW_POOL, BMW_BLACKLIST, Math.random, "
         f"effects.isEffectLoaded(BMW_PLACEHOLDER_ID))) {{ return; }}\n"
+        f"    console.log(\"BMW_PLAY \" + BMW_MY_EFFECT_ID);\n"
         f"    // BMW_ARBITER_CLOSE_END\n"
     )
 
