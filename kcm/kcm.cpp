@@ -29,7 +29,9 @@ BurnWindowKCM::BurnWindowKCM(QObject *parent, const KPluginMetaData &metaData)
     // 正常使用时不设置该变量，行为与未添加此分支一致。
     if (qEnvironmentVariableIsSet("BMW_KCM_DIAG_APPLY")) {
         QTimer::singleShot(0, this, [this]() {
-            apply();
+            // 走 save() 而非直接 apply()：与 Apply 按钮同一入口，
+            // 使该诊断同时验证 save()→apply() 已接通
+            save();
             std::fprintf(stderr, "BMW_KCM_DIAG_APPLY_OUTPUT=%s\n", qPrintable(m_applyOutput));
             std::fflush(stderr);
             QCoreApplication::exit(0);
@@ -168,6 +170,12 @@ void BurnWindowKCM::apply()
                                          : tr("apply 失败（退出码 %1）：%2").arg(code, detail);
     }
     finishApply(ok);
+}
+
+// KCM 的 Apply/Ok 按钮入口。基类 save() 是空实现，不 override 则按钮无效果。
+void BurnWindowKCM::save()
+{
+    apply();
 }
 
 // 每条 return 路径都必须经过这里：applyRunning 归零才能让 Apply 按钮恢复可用，

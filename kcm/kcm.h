@@ -44,6 +44,11 @@ public:
     // 任何失败都把原因写入 applyOutput，不抛异常、不挂起。
     Q_INVOKABLE void apply();
 
+    // 框架在用户点击 Apply/Ok 时调用的入口（KAbstractConfigModule::save()，
+    // 见 kabstractconfigmodule.h:272-274 注释）。必须接到 apply()，
+    // 否则 KCM 的 Apply 按钮点击后无任何反应。
+    void save() override;
+
 Q_SIGNALS:
     void blacklistChanged();
     void applyOutputChanged();
