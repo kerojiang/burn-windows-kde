@@ -12,10 +12,25 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from inject import inject, restore  # noqa: E402  —— 需先注入 sys.path
+from inject import inject, restore, patch_metadata, restore_metadata  # noqa: E402
 
 FIXTURE = ROOT / "tests" / "fixtures" / "main.js.sample"
 ARBITER_SRC = ROOT / "lib" / "arbiter.js"
+
+# 仿 fire 的 metadata.json（Task 3 patch 目标的最小结构）
+METADATA_TEMPLATE = """{
+  "KPackageStructure": "KWin/Effect",
+  "KPlugin": {
+    "Name": "Fire [Burn-My-Windows]",
+    "Id": "kwin6_effect_fire",
+    "EnabledByDefault": false,
+    "ServiceTypes": ["KWin/Effect"]
+  },
+  "X-KDE-ConfigModule": "kcm_kwin4_genericscripted",
+  "X-KWin-Exclusive-Category": "toplevel-open-close-animation",
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}"""
 
 
 @pytest.fixture
@@ -119,3 +134,80 @@ def test_helper_block_contains_arbiter_source(effect_dir):
     inject(str(effect_dir), "id", pool="a", blacklist="")
     src = read_main(effect_dir)
     assert ARBITER_SRC.read_text(encoding="utf-8").strip() in src
+
+
+# ---------------------------------------------------------------- metadata 双改造（Task 3）
+
+
+@pytest.fixture
+def meta_dir(tmp_path) -> Path:
+    """含 metadata.json 的特效目录（main.js 不需要，patch 只碰 metadata）。"""
+    d = tmp_path / "kwin6_effect_fire"
+    d.mkdir()
+    (d / "metadata.json").write_text(METADATA_TEMPLATE, encoding="utf-8")
+    return d
+
+
+def _read_meta(d: Path) -> dict:
+    import json
+    return json.loads((d / "metadata.json").read_text(encoding="utf-8"))
+
+
+def test_patch_adds_internal_and_changes_category(meta_dir):
+    """双改造：加 X-KWin-Internal=true + 改 Exclusive-Category=bmw-hidden，JSON 仍合法。"""
+    assert patch_metadata(str(meta_dir)) is True
+    m = _read_meta(meta_dir)
+    assert m["X-KWin-Internal"] == "true"
+    assert m["X-KWin-Exclusive-Category"] == "bmw-hidden"
+    # ConfigModule 等其余字段不得被动（19 个仍指向上游 genericscripted）
+    assert m["X-KDE-ConfigModule"] == "kcm_kwin4_genericscripted"
+
+
+def test_patch_creates_orig_backup(meta_dir):
+    """首次 patch 前备份原文为 metadata.json.orig（uninstall 还原的唯一依据）。"""
+    before = (meta_dir / "metadata.json").read_text(encoding="utf-8")
+    patch_metadata(str(meta_dir))
+    orig = meta_dir / "metadata.json.orig"
+    assert orig.exists()
+    assert orig.read_text(encoding="utf-8") == before
+
+
+def test_patch_idempotent(meta_dir):
+    """重复 patch：第二次返回 False 且文件逐字节不变（.orig 保留首改原文）。"""
+    patch_metadata(str(meta_dir))
+    first = (meta_dir / "metadata.json").read_bytes()
+    orig_first = (meta_dir / "metadata.json.orig").read_bytes()
+    assert patch_metadata(str(meta_dir)) is False
+    assert (meta_dir / "metadata.json").read_bytes() == first
+    assert (meta_dir / "metadata.json.orig").read_bytes() == orig_first
+
+
+def test_restore_reverts_and_removes_orig(meta_dir):
+    """restore：还原为原文（逐字节）并删除 .orig。"""
+    before = (meta_dir / "metadata.json").read_text(encoding="utf-8")
+    patch_metadata(str(meta_dir))
+    assert restore_metadata(str(meta_dir)) is True
+    assert (meta_dir / "metadata.json").read_text(encoding="utf-8") == before
+    assert not (meta_dir / "metadata.json.orig").exists()
+    # 未备份时 restore 无操作返回 False
+    assert restore_metadata(str(meta_dir)) is False
+
+
+def test_cli_patch_metadata(meta_dir):
+    """CLI 契约：--patch-metadata / --restore-metadata 退出码 0 且字段生效（install/uninstall 消费）。"""
+    import json
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "lib" / "inject.py"),
+         "--patch-metadata", "--effect-dir", str(meta_dir)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((meta_dir / "metadata.json").read_text(encoding="utf-8"))[
+        "X-KWin-Internal"] == "true"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "lib" / "inject.py"),
+         "--restore-metadata", "--effect-dir", str(meta_dir)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not (meta_dir / "metadata.json.orig").exists()

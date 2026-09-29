@@ -179,18 +179,78 @@ def restore(effect_dir) -> None:
     main.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def _meta_path(effect_dir) -> Path:
+    return Path(effect_dir) / "metadata.json"
+
+
+def patch_metadata(effect_dir) -> bool:
+    """metadata 双改造：加 X-KWin-Internal=true、Exclusive-Category 改 bmw-hidden。
+
+    目的：19 个特效从「动效下拉」与「桌面特效列表」两个设置 UI 同时隐藏，
+    运行时加载不受影响（KWin effectloader 不读 X-KWin-Internal）。
+    首次修改前备份原文为 metadata.json.orig —— uninstall 还原的唯一依据；
+    已完成改造 → 不写盘返回 False（幂等）。任何失败走 _die（退出码 2）。
+    """
+    meta = _meta_path(effect_dir)
+    if not meta.exists():
+        _die(f"metadata.json 不存在: {meta}")
+    current = meta.read_text(encoding="utf-8")
+    try:
+        data = json.loads(current)
+    except json.JSONDecodeError as exc:
+        _die(f"metadata.json 不是合法 JSON: {meta}: {exc}")
+
+    if data.get("X-KWin-Internal") == "true" and data.get("X-KWin-Exclusive-Category") == "bmw-hidden":
+        return False  # 已改造，幂等返回
+
+    backup = Path(str(meta) + ".orig")
+    if not backup.exists():
+        # 只在首次修改时备份，保留上游原文（重复 patch 不覆盖 .orig）
+        backup.write_text(current, encoding="utf-8")
+
+    data["X-KWin-Internal"] = "true"
+    data["X-KWin-Exclusive-Category"] = "bmw-hidden"
+    meta.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def restore_metadata(effect_dir) -> bool:
+    """把 metadata.json 还原为 patch 前备份并删除 .orig。
+
+    与 restore(main.js) 不同：无备份时返回 False 而非退出 —— 卸载流程对
+    「从未 patch 过」的目录应无操作继续（幂等卸载），而非失败中止。
+    """
+    meta = _meta_path(effect_dir)
+    backup = Path(str(meta) + ".orig")
+    if not backup.exists():
+        return False
+    meta.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+    backup.unlink()
+    return True
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="向 KWin 特效 main.js 注入随机仲裁代码")
     parser.add_argument("--effect-dir", required=True, help="特效根目录（含 contents/code/main.js）")
-    parser.add_argument("--effect-id", required=True, help="特效 ID，如 kwin6_effect_fire")
+    parser.add_argument("--effect-id", default="", help="特效 ID，如 kwin6_effect_fire（注入模式必填）")
     parser.add_argument("--pool", default="", help="参与随机的特效 ID，逗号分隔")
     parser.add_argument("--blacklist", default="", help="被剔除的特效 ID，逗号分隔")
-    parser.add_argument("--restore", action="store_true", help="还原为备份而非注入")
+    parser.add_argument("--restore", action="store_true", help="还原 main.js 为备份而非注入")
+    parser.add_argument("--patch-metadata", action="store_true",
+                        help="对 --effect-dir 执行 metadata 双改造（幂等）")
+    parser.add_argument("--restore-metadata", action="store_true",
+                        help="把 --effect-dir 的 metadata.json 还原为 .orig 备份")
     args = parser.parse_args(argv)
 
-    if args.restore:
+    if args.patch_metadata:
+        patch_metadata(args.effect_dir)
+    elif args.restore_metadata:
+        restore_metadata(args.effect_dir)
+    elif args.restore:
         restore(args.effect_dir)
     else:
+        if not args.effect_id:
+            _die("注入模式缺少 --effect-id")
         inject(args.effect_dir, args.effect_id, args.pool, args.blacklist)
     return 0
 
