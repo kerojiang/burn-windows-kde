@@ -25,3 +25,6 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+# SDD 工作区（ledger/brief/日志，git-ignored）
+.superpowers/
