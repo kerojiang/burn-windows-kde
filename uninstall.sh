@@ -14,7 +14,8 @@
 #   8. 注入器副本目录（libexec）
 #   9. 系统 KCM 产物 kcm_burnwindow.so —— 新 kwin 落点与旧 systemsettings
 #      落点两处都删（旧入口残留即双入口）
-#  10. 特效目录本身（tar 解包产物）+ 占位特效目录（不在池清单内）
+#  10. 特效目录本身（install.sh do_build 的 tar 解包产物）+ 占位特效目录
+#      （不在池清单内）
 #
 # 用法：
 #   ./uninstall.sh                  卸载真实安装
@@ -173,7 +174,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   log "  6. 删除 apply 脚本: $APPLY_SCRIPT"
   log "  7. 删除注入器目录: $LIBEXEC_DIR"
   log "  8. 删除 KCM 两落点: $KCM_DEST / $KCM_DEST_OLD"
-  log "  9. 删除 ${#POOL_IDS[@]} 个特效目录（tar 解包产物）+ 占位目录"
+  log "  9. 删除 ${#POOL_IDS[@]} 个特效目录（install.sh do_build 的 tar 解包产物）+ 占位目录"
   exit 0
 fi
 
@@ -306,6 +307,9 @@ done
 # ---------------------------------------------------------------- 9. 特效目录
 # 必须排在 unload(1) 与 kwinrc Enabled 移除(2) 之后：此时 KWin 已不再引用
 # 这些目录，删除不会留下"注册项指向不存在目录"的悬空状态。
+# 池成员目录由 install.sh do_build 段 tar 解包生成（install.sh:195
+# `tar -xzf "$pkg" -C "$EFFECTS_DIR"`），属本项目安装产物，卸载必须整体
+# 删除干净 —— 重装时由 do_build 重新解包恢复（卸载-重装回环依赖此语义）。
 # id 校验是 rm -rf 的安全闸 —— POOL_IDS 可来自配置文件（可被外部写入），
 # 含路径分隔符、点目录、或以 - 开头的成员一律拒绝
 dirs_removed=0

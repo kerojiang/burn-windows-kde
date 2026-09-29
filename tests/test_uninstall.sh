@@ -197,9 +197,10 @@ assert_eq "$LEFT_INJECT" "0" "无残留注入代码"
 
 assert_eq "$(ls "$EFFECTS"/*/contents/code/main.js.orig 2>/dev/null | wc -l | tr -d ' ')" "0" ".orig 备份已全部删除"
 
-# 特效目录本身是 install.sh 经 tar 解包的产物（install.sh:133，含
-# metadata.json / shader / locale 数千文件），必须随卸载整体删除 ——
-# 只还原 main.js 不删目录时，"不留任何记录"不成立
+# 特效目录本身是 install.sh 经 tar 解包的产物（do_build 段 install.sh:195
+# `tar -xzf "$pkg" -C "$EFFECTS_DIR"`，含 metadata.json / shader / locale
+# 数千文件），必须随卸载整体删除干净 —— 只还原 main.js 不删目录时，
+# "不留任何记录"不成立
 DIRS_LEFT=""
 for id in $POOL_IDS; do
   [ -n "$id" ] || continue

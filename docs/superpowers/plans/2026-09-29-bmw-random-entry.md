@@ -591,6 +591,8 @@ Expected: 输出「安装完成」；`qdbus6 org.kde.KWin /Effects loadedEffects
 5. 点行尾齿轮 → 聚合页打开（**V3 KCM 落点 / V4 ConfigurableRole**）；19 项全勾、参数面板渲染、改 Duration 保存后 kwinrc 读回 + 动画时长变化
 6. 旧入口「窗口管理 → Burn Window」不存在（D8）
 
+> 📋 自动化实测记录（2026-09-29）：项目 1/2/3 全过 —— `--notify` 写 true 后占位进 loadedEffects 且 journal 无加载错误（**V1 空 main.js 可加载成立**）、开/关窗口 journal 捕获 `BMW_PLAY kwin6_effect_team_rocket` / `..._doom`、写 false 后占位 unloaded 且窗口动画 0 行（enabled 闸拦截）。项目 4/5/6 文件级断言全过：19 个池成员 metadata 含 `X-KWin-Internal:true`、占位对外可见（0 internal、`X-KDE-ConfigModule=kcm_burnwindow`、EBD=false）、KCM 新落点 281480 bytes 在、旧 systemsettings 落点 0 残留（D8）。**视觉项（列表显示/齿轮聚合页）无可用截图通道**（实测：x11grab 截 XWayland root 黑屏、ImageMagick import 挂起、`org.freedesktop.portal.Screenshot` 未注册、grim/spectacle 未装）→ 列用户手动验收。
+
 - [ ] **Step 3: 全量 8 套回归**
 
 Run（严格按序，e2e 最后单独）:
@@ -612,6 +614,8 @@ Expected: 8/8 全绿（各套结果行 PASS=N FAIL=0）
 
 Run: `env SUDO_PASSWORD=$SUDO_PASSWORD bash uninstall.sh && bash install.sh --skip-build --skip-sudo`
 Expected: 卸载后占位/`.orig`/占位键/新落点 KCM 全部清除、19 个 metadata 还原；重装后状态恢复 —— 证明 C4/C5 对称
+
+> ⚠️ **首跑「池为空」的真因是命令用法，不是设计缺陷（Ruling-17 曾误判为「删除超出 spec」，已撤销）**：uninstall.sh 步骤 9 删除 19 个特效目录是**设计内行为** —— 特效由 `install.sh` `do_build` 段 tar 解包生成（install.sh:195 `tar -xzf "$pkg" -C "$EFFECTS_DIR"`），属本项目安装产物，卸载按用户裁定「全部删除干净」；首跑重装报「池为空」是因为用了 `--skip-build` 跳过构建，正确回环 = `uninstall.sh` → **完整** `install.sh`（带构建重新解包）。执行期修正：原注释行号 `install.sh:133`（实为 EXTRACT_ID_CODE heredoc 的 except 行）改为 `install.sh:195`，注释语义「tar 解包产物」本就正确。回环实测（正确方式）：卸载后特效/占位/KCM/键/注入/metadata/配置全清；完整重装恢复 20 目录/注入 19/键 19/KCM/池 19；`loadEffect` 补 19 加载态（install.sh:264 写键无 `--notify`，KConfigWatcher 不触发，安装后需手动加载或重启 KWin）—— 占位关态 0，C4/C5 对称成立。
 
 - [ ] **Step 5: 验收报告 + Commit（若验收产生文档）**
 
