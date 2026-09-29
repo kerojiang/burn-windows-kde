@@ -32,6 +32,9 @@ MARKER = "BMW_ARBITER_BEGIN"
 ROLE_OPEN = 424242
 ROLE_CLOSE = 424243
 
+# 占位特效 id：注入产物以此查询总开关加载态（effects.isEffectLoaded）
+PLACEHOLDER_ID = "kwin6_effect_bmw_random"
+
 ARBITER_SRC = Path(__file__).resolve().parent / "arbiter.js"
 
 # (锚点字面量, 用途标签) —— 顺序即注入顺序
@@ -68,6 +71,7 @@ def _build_block(effect_id: str, pool: str, blacklist: str) -> str:
         f"const BMW_BLACKLIST = {_csv_to_json(blacklist)};",
         f"const BMW_ROLE_OPEN = {ROLE_OPEN};",
         f"const BMW_ROLE_CLOSE = {ROLE_CLOSE};",
+        f'const BMW_PLACEHOLDER_ID = {json.dumps(PLACEHOLDER_ID)};',
         "",
         arbiter,
         f"// === BMW_ARBITER_END ===",
@@ -80,7 +84,8 @@ def _open_call() -> str:
     return (
         f"    // BMW_ARBITER_OPEN_BEGIN\n"
         f"    if (!bmwShouldPlay(window, BMW_ROLE_OPEN, BMW_MY_EFFECT_ID, "
-        f"BMW_POOL, BMW_BLACKLIST, Math.random)) {{ return; }}\n"
+        f"BMW_POOL, BMW_BLACKLIST, Math.random, "
+        f"effects.isEffectLoaded(BMW_PLACEHOLDER_ID))) {{ return; }}\n"
         f"    // BMW_ARBITER_OPEN_END\n"
     )
 
@@ -89,7 +94,8 @@ def _close_call() -> str:
     return (
         f"    // BMW_ARBITER_CLOSE_BEGIN\n"
         f"    if (!bmwShouldPlay(window, BMW_ROLE_CLOSE, BMW_MY_EFFECT_ID, "
-        f"BMW_POOL, BMW_BLACKLIST, Math.random)) {{ return; }}\n"
+        f"BMW_POOL, BMW_BLACKLIST, Math.random, "
+        f"effects.isEffectLoaded(BMW_PLACEHOLDER_ID))) {{ return; }}\n"
         f"    // BMW_ARBITER_CLOSE_END\n"
     )
 

@@ -102,6 +102,18 @@ def test_cli_returns_exit_code_2_on_unmatched_structure(effect_dir, capsys):
     assert proc.stderr.strip() != ""            # 必须有可读原因
 
 
+def test_injection_contains_placeholder_gate(effect_dir):
+    """调用行必须带开关闸：占位常量 + effects.isEffectLoaded(BMW_PLACEHOLDER_ID)。
+
+    这是 Task 1 的 C++ 侧契约之外的注入产物契约：19 个 main.js 由 inject.py
+    生成，闸是否接上只能靠产物字符串断言锁定（e2e 关态用例为运行时兜底）。
+    """
+    inject(str(effect_dir), "id", pool="a", blacklist="")
+    src = read_main(effect_dir)
+    assert 'const BMW_PLACEHOLDER_ID = "kwin6_effect_bmw_random"' in src
+    assert "effects.isEffectLoaded(BMW_PLACEHOLDER_ID)" in src
+
+
 def test_helper_block_contains_arbiter_source(effect_dir):
     """注入的 helper 必须与 lib/arbiter.js 逐字一致，避免两处实现漂移。"""
     inject(str(effect_dir), "id", pool="a", blacklist="")

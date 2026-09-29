@@ -93,6 +93,29 @@ test("残留 winner + 池清空：返回 false（不复用旧结果）", () => {
   assert.equal(bmwShouldPlay(w, OPEN_ROLE, "a", [], [], () => 0.5), false);
 });
 
+test("开关闸：enabled=false 不播放且不写 winner", () => {
+  // 占位特效未加载（开关关闭）时：直接返回 false，且不得留下任何残留 winner，
+  // 否则开关重开后会复用关闭期抽出的陈旧结果。
+  const w = fakeWindow();
+  assert.equal(bmwShouldPlay(w, OPEN_ROLE, "a", ["a", "b"], [], sequence(0), false), false);
+  assert.equal(w.data(OPEN_ROLE), null);
+});
+
+test("开关闸：enabled=true 正常抽签", () => {
+  const w = fakeWindow();
+  assert.equal(bmwShouldPlay(w, OPEN_ROLE, "a", ["a", "b"], [], sequence(0), true), true);
+  assert.equal(w.data(OPEN_ROLE), "a");
+});
+
+test("开关关→开：关闭态未写 winner，开启后按 rng 重新抽", () => {
+  const w = fakeWindow();
+  const rng = sequence(0.5); // 关闭态早退不消费 rng；开启态消费首值 0.5 → 索引 1
+  bmwShouldPlay(w, OPEN_ROLE, "a", ["a", "b"], [], rng, false);
+  assert.equal(w.data(OPEN_ROLE), null, "关闭态不写 winner");
+  assert.equal(bmwShouldPlay(w, OPEN_ROLE, "b", ["a", "b"], [], rng, true), true);
+  assert.equal(w.data(OPEN_ROLE), "b");
+});
+
 test("兼容 window.data 未设置时返回 undefined 与 null 两种情况", () => {
   // KWin 真实返回值未实测确认，两种都必须被当作"未设置"并触发抽签。
   const wUndefined = {
