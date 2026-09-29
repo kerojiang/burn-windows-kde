@@ -81,6 +81,31 @@ assert_exit_code_zero() {
   if [ "$RC" -eq 0 ]; then pass "$1"; else fail "$1" "退出码应为 0，实际 $RC"; fi
 }
 
+# ---------------------------------------------------------------- 占位模板（静态，不依赖安装）
+echo "=== test_placeholder_template ==="
+TEMPLATE="$ROOT/placeholder/kwin6_effect_bmw_random"
+assert_exists "$TEMPLATE/metadata.json" "占位 metadata.json 存在"
+assert_exists "$TEMPLATE/contents/code/main.js" "占位 main.js 存在"
+if [ -f "$TEMPLATE/metadata.json" ]; then
+  if python3 - "$TEMPLATE/metadata.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1], encoding="utf-8"))
+assert m["KPackageStructure"] == "KWin/Effect"
+assert m["KPlugin"]["Id"] == "kwin6_effect_bmw_random"
+assert m["KPlugin"]["Name"] == "随机特效 [Burn-My-Windows]"
+assert m["KPlugin"]["EnabledByDefault"] is False
+assert m["X-KWin-Exclusive-Category"] == "toplevel-open-close-animation"
+assert m["X-KDE-ConfigModule"] == "kcm_burnwindow"
+assert m["X-Plasma-API"] == "javascript"
+assert m["X-Plasma-MainScript"] == "code/main.js"
+PY
+  then pass "占位字段断言"
+  else fail "占位字段断言" "字段不符（见上方 Python 断言输出）"
+  fi
+fi
+run node --check "$TEMPLATE/contents/code/main.js"
+assert_exit_code_zero "占位 main.js 语法通过 node --check"
+
 echo "=== test_dry_run_writes_nothing ==="
 setup
 run bash "$INSTALL" --dry-run --prefix "$PREFIX"
