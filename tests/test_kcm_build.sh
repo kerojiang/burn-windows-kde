@@ -359,6 +359,64 @@ assert len(fire["params"]) > 0, "同一模型中正常成员不受坏成员影�
   assert_contains "main.xml" "stderr 含 main.xml 解析警告（失败不静默）"
 fi
 
+# ============================================================ 5. save 参数链路（Task 8）
+# DIAG_PARAMS 预设脏区 → DIAG_APPLY 走 save() 全链 → 断言落盘/去重/失败容错
+param_diag_guard() {
+  if [ ! -f "$KCM_DEST" ] || ! grep -qa "kcm_burnwindow" "$KCM_DEST" 2>/dev/null; then
+    skip "$1" "KCM 非本次构建产物（前置用例失败/SKIP）"
+    return 1
+  fi
+  command -v kcmshell6 >/dev/null 2>&1 || { skip "$1" "kcmshell6 不可用"; return 1; }
+  command -v kreadconfig6 >/dev/null 2>&1 || { skip "$1" "kreadconfig6 不可用"; return 1; }
+  return 0
+}
+
+echo "=== test_param_write_hits_effect_group ==="
+if param_diag_guard "参数落盘诊断"; then
+  cat > "$PREFIX/task8-randomrc" <<CFG
+[General]
+Pool=kwin6_effect_fire,kwin6_effect_doom
+Blacklist=
+ApplyScript=/bin/true
+CFG
+  rm -f "$PREFIX/task8-kwinrc"
+  run env BURN_WINDOW_CONFIG="$PREFIX/task8-randomrc" \
+          BMW_KCM_KWINRC="$PREFIX/task8-kwinrc" \
+          BMW_KCM_DIAG_APPLY=1 \
+          BMW_KCM_DIAG_PARAMS="kwin6_effect_fire:Duration:999,kwin6_effect_fire:Speed:1.5,kwin6_effect_doom:Size:42" \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "参数诊断正常退出"
+  assert_contains "BMW_KCM_PARAM_WRITE=kwin6_effect_fire:Duration:999" "PARAM_WRITE 诊断：fire Duration 走了落盘路径"
+  DUR="$(kreadconfig6 --file "$PREFIX/task8-kwinrc" --group Effect-kwin6_effect_fire --key Duration 2>/dev/null)"
+  assert_eq "$DUR" "999" "kwinrc [Effect-kwin6_effect_fire] Duration == 999（落盘可读）"
+  SPEED="$(kreadconfig6 --file "$PREFIX/task8-kwinrc" --group Effect-kwin6_effect_fire --key Speed 2>/dev/null)"
+  assert_eq "$SPEED" "1.5" "同组第二键 Speed == 1.5（小数串原样落盘）"
+fi
+
+echo "=== test_reconfigure_called_per_effect ==="
+if param_diag_guard "reconfigure 去重诊断"; then
+  RECONF_N="$(printf '%s' "$OUTPUT" | grep -c 'BMW_KCM_RECONFIGURE=')"
+  assert_eq "$RECONF_N" "2" "3 条参数（fire×2 + doom×1）→ 去重后恰好 2 次 reconfigure"
+fi
+
+echo "=== test_reconfigure_failure_keeps_apply_ok ==="
+if param_diag_guard "reconfigure 失败容错"; then
+  FAKEBIN="$PREFIX/fakebin"
+  mkdir -p "$FAKEBIN"
+  printf '#!/bin/sh\nexit 1\n' > "$FAKEBIN/qdbus6"
+  chmod +x "$FAKEBIN/qdbus6"
+  run env PATH="$FAKEBIN:$PATH" \
+          BURN_WINDOW_CONFIG="$PREFIX/task8-randomrc" \
+          BMW_KCM_KWINRC="$PREFIX/task8-kwinrc-fail" \
+          BMW_KCM_DIAG_APPLY=1 \
+          BMW_KCM_DIAG_PARAMS="kwin6_effect_fire:Duration:1234" \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "qdbus6 失败不改变诊断退出码（apply 未被判失败）"
+  assert_contains "BMW_KCM_PARAM_WRITE=kwin6_effect_fire:Duration:1234" "失败场景参数仍先落盘（spec 5.1 顺序）"
+  assert_contains "reconfigureEffect" "reconfigure 失败警告已合并进 DIAG_APPLY_OUTPUT"
+  assert_contains "BMW_KCM_DIAG_APPLY_RUNNING=false" "applyRunning 归零（finishApply 唯一收口）"
+fi
+
 # ============================================================ 环境恢复
 echo
 echo "恢复环境：还原/移除测试期间写入的系统 KCM"

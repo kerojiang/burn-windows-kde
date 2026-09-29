@@ -75,6 +75,9 @@ Q_SIGNALS:
 private:
     void loadConfig();
     void saveBlacklist();
+    // 参数段（Task 8）：m_paramDirty 落盘 kwinrc [Effect-<id>] 并对去重 id
+    // 逐个 reconfigureEffect；失败仅累积到 m_paramWarnings，成败判定归 apply 脚本
+    void writeDirtyParams();
     void finishApply(bool ok);
     QString effectDisplayName(const QString &effectId) const;
     // 解析特效参数模型 main.xml（KConfigXT：entry name/type + 子元素 default）。
@@ -90,8 +93,11 @@ private:
     bool m_randomLoaded = false;
     // qdbus6 loadedEffects 查询只跑一次（loadConfig 会被基类重复调用）
     bool m_randomLoadedQueryDone = false;
-    // 参数脏区：[{effectId, name, value}]，apply() 成功后清空
+    // 参数脏区：[{effectId, name, value}]，writeDirtyParams 落盘后清空
     QVariantList m_paramDirty;
+    // reconfigure 失败警告的暂存区 —— apply() 中段多处 m_applyOutput = 会覆盖
+    // 直接 append，统一在唯一收口 finishApply 合并（Ruling-11）
+    QString m_paramWarnings;
     QString m_applyOutput;
     bool m_applyRunning = false;
 

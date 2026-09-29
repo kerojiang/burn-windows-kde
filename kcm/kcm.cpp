@@ -31,6 +31,19 @@ BurnWindowKCM::BurnWindowKCM(QObject *parent, const KPluginMetaData &metaData)
     // 正常使用时不设置该变量，行为与未添加此分支一致。
     if (qEnvironmentVariableIsSet("BMW_KCM_DIAG_APPLY")) {
         QTimer::singleShot(0, this, [this]() {
+            // 可选参数预设（Task 8）：BMW_KCM_DIAG_PARAMS=id:name:value,...
+            // 先 setParam 进脏区，使 save()→apply() 的参数段被真实执行
+            const QString diagParams = qEnvironmentVariable("BMW_KCM_DIAG_PARAMS");
+            if (!diagParams.isEmpty()) {
+                const QStringList items =
+                    diagParams.split(QLatin1Char(','), Qt::SkipEmptyParts);
+                for (const QString &item : items) {
+                    const QStringList parts = item.split(QLatin1Char(':'));
+                    if (parts.size() == 3) {
+                        setParam(parts[0], parts[1], parts[2]);
+                    }
+                }
+            }
             // 走 save() 而非直接 apply()：与 Apply 按钮同一入口，
             // 使该诊断同时验证 save()→apply() 已接通
             save();
@@ -274,6 +287,48 @@ void BurnWindowKCM::saveBlacklist()
     group.sync();
 }
 
+// 参数段（Task 8，spec 5.1）：脏区落盘 kwinrc [Effect-<id>]，随后对去重后的
+// 特效 id 各调一次 reconfigureEffect 使 KWin 重读配置。
+// 失败（qdbus6 不可用/KWin 拒绝）只累积警告到 m_paramWarnings —— 不影响 apply
+// 脚本的成败判定：参数已落盘，警告在 finishApply 收口合并展示。
+void BurnWindowKCM::writeDirtyParams()
+{
+    if (m_paramDirty.isEmpty()) {
+        return;
+    }
+
+    KConfig kcfg(kwinrcPath(), KConfig::SimpleConfig);
+    QStringList touchedIds;
+    for (const QVariant &item : m_paramDirty) {
+        const QVariantMap entry = item.toMap();
+        const QString id = entry.value(QStringLiteral("effectId")).toString();
+        const QString name = entry.value(QStringLiteral("name")).toString();
+        const QString value = entry.value(QStringLiteral("value")).toString();
+        KConfigGroup group(&kcfg, QStringLiteral("Effect-") + id);
+        // 字符串原样写入：KConfig 的类型化读取端解析十进制 r,g,b、#RRGGBB、
+        // #AARRGGBB（本机 KF6 实测三者 readEntry(QColor) 均 valid，Ruling-10）
+        group.writeEntry(name, value);
+        if (!touchedIds.contains(id)) {
+            touchedIds << id;
+        }
+        std::fprintf(stderr, "BMW_KCM_PARAM_WRITE=%s:%s:%s\n",
+                     qPrintable(id), qPrintable(name), qPrintable(value));
+    }
+    kcfg.sync(); // 全部键先落盘，再触发特效重载
+
+    for (const QString &id : std::as_const(touchedIds)) {
+        const int rc = QProcess::execute(QStringLiteral("qdbus6"),
+                                          {QStringLiteral("org.kde.KWin"), QStringLiteral("/Effects"),
+                                           QStringLiteral("reconfigureEffect"), id});
+        std::fprintf(stderr, "BMW_KCM_RECONFIGURE=%s\n", qPrintable(id));
+        if (rc != 0) {
+            m_paramWarnings += tr("reconfigureEffect %1 失败（退出码 %2）\n").arg(id).arg(rc);
+        }
+    }
+    // 写入完成即清（Ruling-11）：参数已落盘，apply 脚本失败的重试只需重跑脚本
+    m_paramDirty.clear();
+}
+
 void BurnWindowKCM::apply()
 {
     if (m_applyRunning) {
@@ -286,6 +341,10 @@ void BurnWindowKCM::apply()
     m_applyOutput.clear();
     emit applyRunningChanged();
     emit applyOutputChanged();
+
+    // 参数段（Task 8）：必须在 m_applyOutput.clear() 之后 —— 警告走
+    // m_paramWarnings 独立通道，在 finishApply 收口合并（Ruling-11）
+    writeDirtyParams();
 
     if (m_applyScript.isEmpty() || !QFile::exists(m_applyScript)) {
         m_applyOutput = tr("ApplyScript 不存在：%1")
@@ -345,6 +404,15 @@ void BurnWindowKCM::save()
 // 必须让用户能再次点击 Apply 重试。
 void BurnWindowKCM::finishApply(bool ok)
 {
+    // reconfigure 警告在唯一收口合并（Ruling-11）：apply() 中段所有
+    // m_applyOutput = 赋值路径（脚本结果/超时/启动失败/脚本缺失）都先于这里
+    if (!m_paramWarnings.isEmpty()) {
+        if (!m_applyOutput.isEmpty()) {
+            m_applyOutput += QLatin1Char('\n');
+        }
+        m_applyOutput += m_paramWarnings;
+        m_paramWarnings.clear();
+    }
     m_applyRunning = false;
     emit applyRunningChanged();
     emit applyOutputChanged();
