@@ -3,15 +3,18 @@
 #
 # 清理项与 install.sh 的产物一一对应：
 #   1. KWin 内存中已加载的池特效（unloadEffect；非 --prefix 模式）
-#   2. kwinrc 中池成员的 *Enabled 条目 —— 必须先于还原，否则 .orig 删除后池成员无从推导
-#   3. 注入到 main.js 的仲裁代码 —— 从 main.js.orig 还原
-#   4. main.js.orig 备份本身（确认还原后删除）
+#   2. kwinrc 中池成员的 *Enabled 条目 + 占位特效条目 —— 必须先于还原，
+#      否则 .orig 删除后池成员无从推导；占位不在池清单内须单独删除
+#   3. 注入到 main.js 的仲裁代码（从 main.js.orig 还原）+ metadata 双改造
+#      （从 metadata.json.orig 还原，撤销 internal/bmw-hidden）
+#   4. main.js.orig / metadata.json.orig 备份本身（确认还原后删除）
 #   5. kwinrc 的 *.bak.* 备份（安装时产生）
 #   6. 配置文件 burn-window-randomrc
 #   7. apply 脚本 burn-window-apply-config.sh
 #   8. 注入器副本目录（libexec）
-#   9. 系统 KCM 产物 kcm_burnwindow.so
-#  10. 特效目录本身（tar 解包产物：metadata.json / shader / locale）
+#   9. 系统 KCM 产物 kcm_burnwindow.so —— 新 kwin 落点与旧 systemsettings
+#      落点两处都删（旧入口残留即双入口）
+#  10. 特效目录本身（tar 解包产物）+ 占位特效目录（不在池清单内）
 #
 # 用法：
 #   ./uninstall.sh                  卸载真实安装
@@ -27,6 +30,10 @@ set -euo pipefail
 DRY_RUN=0
 SKIP_SUDO=0
 PREFIX=""
+
+# 占位特效 id 与 install.sh 同值：不在池成员清单内，其 kwinrc 条目与目录
+# 都必须被显式清理（install.sh PLACEHOLDER_ID）
+PLACEHOLDER_ID="kwin6_effect_bmw_random"
 
 log()  { echo "[uninstall] $*"; }
 warn() { echo "[uninstall] 警告: $*" >&2; }
@@ -85,7 +92,10 @@ else
   APPLY_SCRIPT="$HOME/.local/libexec/burn-window-apply-config.sh"
   LIBEXEC_DIR="$HOME/.local/libexec/burn-window"
 fi
-KCM_DEST="${BURN_WINDOW_KCM_DEST:-/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so}"
+# KCM 两落点都必须清理：新 kwin 落点（齿轮入口）与历史 systemsettings
+# 落点（旧入口，残留即双入口违反 D8）；均可经环境变量覆盖供测试隔离
+KCM_DEST="${BURN_WINDOW_KCM_DEST:-/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so}"
+KCM_DEST_OLD="${BURN_WINDOW_KCM_DEST_OLD:-/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so}"
 
 # ---------------------------------------------------------------- 依赖检查
 # 必须在任何清理动作之前完成：kwinrc 清理依赖这两个命令，若缺失则宁可
@@ -156,14 +166,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
   else
     log "  1. 跳过 KWin unload（--prefix 隔离模式不触碰真实 KWin）"
   fi
-  log "  2. 移除 kwinrc 中 ${#POOL_IDS[@]} 个池成员 Enabled 条目"
-  log "  3. 还原 $RESTORE_N 个 main.js（从 .orig），删除 $ORIG_N 个 .orig"
+  log "  2. 移除 kwinrc 中 ${#POOL_IDS[@]} 个池成员 Enabled 条目 + 占位条目"
+  log "  3. 还原 $RESTORE_N 个 main.js（从 .orig），删除 $ORIG_N 个 .orig；还原 metadata 双改造"
   log "  4. 删除 $KWINRC_BAK_N 个 kwinrc 备份"
   log "  5. 删除配置: $CONFIG_FILE"
   log "  6. 删除 apply 脚本: $APPLY_SCRIPT"
   log "  7. 删除注入器目录: $LIBEXEC_DIR"
-  log "  8. 删除 KCM: $KCM_DEST"
-  log "  9. 删除 ${#POOL_IDS[@]} 个特效目录（tar 解包产物）"
+  log "  8. 删除 KCM 两落点: $KCM_DEST / $KCM_DEST_OLD"
+  log "  9. 删除 ${#POOL_IDS[@]} 个特效目录（tar 解包产物）+ 占位目录"
   exit 0
 fi
 
@@ -203,6 +213,16 @@ if [ "${#POOL_IDS[@]}" -gt 0 ]; then
     exit 1
   fi
 fi
+# 占位条目独立删除：占位不是池成员（不参与随机），池循环覆盖不到它；
+# --delete 对不存在的键幂等无操作，失败必须与池条目同等上报
+if kwriteconfig6 --file "$KWINRC" --group Plugins --key "${PLACEHOLDER_ID}Enabled" --delete \
+     >/dev/null 2>&1; then
+  log "已移除 kwinrc 占位特效条目: ${PLACEHOLDER_ID}Enabled"
+else
+  warn "kwinrc 占位条目删除失败（文件可能只读）: ${PLACEHOLDER_ID}Enabled"
+  warn "卸载不完整：请检查 $KWINRC 权限后重跑"
+  exit 1
+fi
 
 # ---------------------------------------------------------------- 3. 还原注入
 restored=0
@@ -227,6 +247,18 @@ if [ "$dropped_backup" -gt 0 ]; then
   warn "其中 $dropped_backup 个 main.js 已不含注入标记，仅删除备份未覆盖文件"
 fi
 
+# metadata 双改造还原：.orig 是 patch 前逐字节原文，mv 覆盖即完整撤销
+# （internal 移除 + 组名回正）。按 *.metadata.json.orig 全目录扫描而非池清单
+# —— 还原不得依赖"该目录是否还在池里"，孤儿/边缘目录同样要还原。
+# 放在特效目录删除（步骤 9）之前：目录没了就无处还原。
+meta_restored=0
+for orig in "$EFFECTS_DIR"/*/metadata.json.orig; do
+  [ -e "$orig" ] || continue
+  mv -f "$orig" "${orig%.orig}"
+  meta_restored=$((meta_restored + 1))
+done
+log "已还原 $meta_restored 个 metadata.json（双改造撤销）"
+
 # ---------------------------------------------------------------- 4. kwinrc 备份
 if [ "$KWINRC_BAK_N" -gt 0 ]; then
   rm -f "$KWINRC".bak.*
@@ -244,30 +276,32 @@ if [ -e "$LIBEXEC_DIR" ]; then
 fi
 log "已删除 $removed_any 项（配置 / apply 脚本 / 注入器目录）"
 
-# ---------------------------------------------------------------- 8. KCM
+# ---------------------------------------------------------------- 8. KCM（两落点）
 # 删除逻辑按提权需求分层：目标目录可写则直接删（测试用的 prefix 路径）；
 # 否则需要提权，--skip-sudo 表示用户主动放弃该步骤（不算失败）。
+# 新旧两落点逐个执行同一套分层；状态取最严重者（1 > 2 > 0）。
 KCM_STATE=0   # 0=不存在/已删  1=需要提权但凭据不可用  2=--skip-sudo 跳过
-if [ -e "$KCM_DEST" ]; then
-  kcm_dir="$(dirname "$KCM_DEST")"
+for kcm_dest in "$KCM_DEST" "$KCM_DEST_OLD"; do
+  [ -e "$kcm_dest" ] || continue
+  kcm_dir="$(dirname "$kcm_dest")"
   if [ -w "$kcm_dir" ]; then
-    rm -f "$KCM_DEST"
-    log "已删除 KCM: $KCM_DEST"
+    rm -f "$kcm_dest"
+    log "已删除 KCM: $kcm_dest"
   elif [ "$SKIP_SUDO" -eq 1 ]; then
-    warn "已跳过 KCM 删除（--skip-sudo）: $KCM_DEST"
-    KCM_STATE=2
+    warn "已跳过 KCM 删除（--skip-sudo）: $kcm_dest"
+    [ "$KCM_STATE" -eq 0 ] && KCM_STATE=2
   elif sudo -n true 2>/dev/null; then
-    sudo rm -f "$KCM_DEST"
-    log "已删除 KCM（凭证缓存）: $KCM_DEST"
+    sudo rm -f "$kcm_dest"
+    log "已删除 KCM（凭证缓存）: $kcm_dest"
   elif [ -n "${SUDO_PASSWORD:-}" ]; then
-    printf '%s\n' "$SUDO_PASSWORD" | sudo -S rm -f "$KCM_DEST"
-    log "已删除 KCM（SUDO_PASSWORD）: $KCM_DEST"
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S rm -f "$kcm_dest"
+    log "已删除 KCM（SUDO_PASSWORD）: $kcm_dest"
   else
-    warn "KCM 需要提权但凭据不可用，未删除: $KCM_DEST"
+    warn "KCM 需要提权但凭据不可用，未删除: $kcm_dest"
     warn "可先执行 sudo -v，或以 SUDO_PASSWORD=<密码> 方式重跑"
     KCM_STATE=1
   fi
-fi
+done
 
 # ---------------------------------------------------------------- 9. 特效目录
 # 必须排在 unload(1) 与 kwinrc Enabled 移除(2) 之后：此时 KWin 已不再引用
@@ -292,6 +326,18 @@ fi
 if [ -n "$skipped_ids" ]; then
   warn "跳过非法特效 id:$skipped_ids"
 fi
+
+# 占位特效目录：不在 POOL_IDS（不参与随机），池成员循环覆盖不到，须显式删除。
+# id 是脚本内常量而非外部输入，直接删除；同样走安全闸 case 保持风格一致。
+for id in "$PLACEHOLDER_ID"; do
+  case "$id" in
+    */*|.|..|-* ) continue ;;
+  esac
+  if [ -d "$EFFECTS_DIR/$id" ]; then
+    rm -rf "$EFFECTS_DIR/$id"
+    log "已删除占位特效目录: $id"
+  fi
+done
 
 # ---------------------------------------------------------------- 结果
 log "卸载完成（还原 $restored 个特效、清理池成员 ${#POOL_IDS[@]} 个）"

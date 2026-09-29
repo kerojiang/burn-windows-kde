@@ -77,7 +77,11 @@ setup() {
     [ -e "$d" ] || continue
     id="$(basename "$d")"
     mkdir -p "$EFFECTS/$id/contents/code"
-    cp "$d/metadata.json" "$EFFECTS/$id/" 2>/dev/null || true
+    # metadata 优先取 .orig：真实环境 patch 后 metadata.json 是改造态，
+    # 只有 .orig 才是上游原文，还原断言才能与环境状态解耦（同 test_install）
+    src="$d/metadata.json.orig"
+    [ -e "$src" ] || src="$d/metadata.json"
+    cp "$src" "$EFFECTS/$id/metadata.json" 2>/dev/null || true
     # 优先取该特效的 .orig（注入前的纯净备份）；无备份时 main.js 即未注入态
     src="$d/contents/code/main.js.orig"
     [ -e "$src" ] || src="$d/contents/code/main.js"
@@ -106,6 +110,21 @@ setup() {
     fail "setup: install.sh 安装失败" "退出码 $RC"
     return 1
   fi
+
+  # 预置占位总开关条目（用户开过开关的场景）：占位不在池成员清单内，
+  # 其 kwinrc 条目必须被卸载显式删除（D8/C5 对称）
+  kwriteconfig6 --file "$KWINRC" --group Plugins --key kwin6_effect_bmw_randomEnabled true
+
+  # 孤儿目录：含 metadata.json + .orig 但非池成员（install 之后创建，避开
+  # 安装期一切遍历）。池成员目录会被卸载整体删除、还原效果不可观察，孤儿
+  # 目录保留下来后，"metadata 还原"可逐字节断言，且验证还原独立于池清单。
+  ORPHAN="$EFFECTS/orphan_not_in_pool"
+  mkdir -p "$ORPHAN"
+  printf '%s\n' '{"KPlugin": {"Id": "orphan_not_in_pool"}, "X-KWin-Internal": "true", "X-KWin-Exclusive-Category": "bmw-hidden"}' \
+    > "$ORPHAN/metadata.json"
+  printf '%s\n' '{"KPlugin": {"Id": "orphan_not_in_pool"}, "X-KWin-Exclusive-Category": "toplevel-open-close-animation"}' \
+    > "$ORPHAN/metadata.json.orig"
+  cp "$ORPHAN/metadata.json.orig" "$TMPDIR_TEST/orphan_meta.orig"
 
   # 记录池成员：卸载后的 kwinrc 断言必须逐 id 检查 —— 不能用宽泛的
   # `kwin6_effect_.*Enabled` 统计，否则会把用例 6 放置的非池条目
@@ -153,6 +172,10 @@ echo "=== test_uninstall_removes_kcm ==="
 FAKE_KCM="$PREFIX/kcm_burnwindow.so"
 : > "$FAKE_KCM"
 export BURN_WINDOW_KCM_DEST="$FAKE_KCM"
+# 旧 systemsettings 落点同样放假文件：两入口必须都被清理（D8 单一入口）
+FAKE_KCM_OLD="$PREFIX/kcm_burnwindow_old.so"
+: > "$FAKE_KCM_OLD"
+export BURN_WINDOW_KCM_DEST_OLD="$FAKE_KCM_OLD"
 
 # ================================================================ 3. 执行卸载
 echo
@@ -192,6 +215,7 @@ assert_exists "$CFG" "配置文件已删除"
 assert_exists "$PREFIX/burn-window-apply-config.sh" "apply 脚本已删除"
 assert_exists "$PREFIX/libexec" "libexec 目录已删除（inject.py + arbiter.js）"
 assert_exists "$FAKE_KCM" "KCM 产物已删除"
+assert_exists "$FAKE_KCM_OLD" "KCM 旧 systemsettings 落点已删除（防双入口）"
 
 LEFT_KEYS=""
 for id in $POOL_IDS; do
@@ -206,6 +230,50 @@ else
 fi
 
 assert_eq "$(ls "$KWINRC".bak.* 2>/dev/null | wc -l | tr -d ' ')" "0" "kwinrc 备份已删除（不留任何记录）"
+
+# ================================================================ 4b. 占位与 metadata 对称清理（Task 5）
+echo "=== test_uninstall_placeholder_and_metadata_symmetry ==="
+
+# 卸载输出必须显式报告 metadata 还原（步骤执行证据，池成员目录已整体删除）
+assert_output_contains "metadata.json（双改造撤销）" "卸载输出含 metadata 还原报告"
+
+# 占位特效目录不在池成员清单内，必须显式删除（C5）
+if [ -d "$EFFECTS/kwin6_effect_bmw_random" ]; then
+  fail "占位特效目录已删除" "仍存在: $EFFECTS/kwin6_effect_bmw_random"
+else
+  pass "占位特效目录已删除"
+fi
+
+# 占位总开关 kwinrc 条目独立删除（setup 预置了 Enabled=true）
+PH_KEY="$(kreadconfig6 --file "$KWINRC" --group Plugins --key kwin6_effect_bmw_randomEnabled 2>/dev/null)"
+assert_eq "$PH_KEY" "" "kwinrc 占位条目已删除"
+
+# 全目录扫描：19 池 + 孤儿的 metadata.json.orig 必须零残留
+META_ORIG_N="$(ls "$EFFECTS"/*/metadata.json.orig 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$META_ORIG_N" "0" "无 metadata.json.orig 残留"
+
+# 孤儿目录（非池成员）不得被删，但 metadata 必须逐字节还原为 .orig 原文
+if [ -d "$EFFECTS/orphan_not_in_pool" ]; then
+  if cmp -s "$TMPDIR_TEST/orphan_meta.orig" "$EFFECTS/orphan_not_in_pool/metadata.json"; then
+    pass "孤儿目录 metadata 逐字节还原（还原独立于池成员清单）"
+  else
+    fail "孤儿目录 metadata 逐字节还原" "内容与原文不一致"
+  fi
+else
+  fail "孤儿目录 metadata 逐字节还原" "孤儿目录被误删（非池成员不应删除）"
+fi
+
+# 静态：KCM 默认落点必须是 kwin 新落点，且旧落点同样纳入删除
+if grep -q 'BURN_WINDOW_KCM_DEST:-/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so' "$ROOT/uninstall.sh"; then
+  pass "uninstall KCM_DEST 默认值指向 kwin 新落点"
+else
+  fail "uninstall KCM_DEST 默认值指向 kwin 新落点" "未找到新落点字面定义"
+fi
+if grep -q 'KCM_DEST_OLD' "$ROOT/uninstall.sh"; then
+  pass "uninstall 含旧落点清理（KCM_DEST_OLD）"
+else
+  fail "uninstall 含旧落点清理（KCM_DEST_OLD）" "未找到 KCM_DEST_OLD"
+fi
 
 # ================================================================ 5. 还原逐字节一致
 echo "=== test_uninstall_restores_main_js_bit_exact ==="
@@ -322,6 +390,7 @@ rm -rf "$KWINRC"
 
 # ---------------------------------------------------------------- 环境恢复
 unset BURN_WINDOW_KCM_DEST
+unset BURN_WINDOW_KCM_DEST_OLD
 teardown
 
 echo
