@@ -19,12 +19,16 @@ RC=0
 setup() {
   PREFIX="$(mktemp -d /tmp/bmw-install-test.XXXXXX)"
   mkdir -p "$PREFIX/effects"
-  local d id
+  local d id src
   for d in "$REAL_EFFECTS"/*/; do
     id="$(basename "$d")"
     mkdir -p "$PREFIX/effects/$id/contents/code"
     cp "$d/metadata.json" "$PREFIX/effects/$id/" 2>/dev/null || true
-    cp "$d/contents/code/main.js" "$PREFIX/effects/$id/contents/code/" 2>/dev/null || true
+    # fixture 必须是上游纯净态：真实环境被 e2e 首装后 main.js 已注入，
+    # 而 inject.py 对"已注入但缺 .orig"会 exit 2（lib/inject.py 152-155）
+    src="$d/contents/code/main.js.orig"
+    [ -e "$src" ] || src="$d/contents/code/main.js"
+    cp "$src" "$PREFIX/effects/$id/contents/code/main.js" 2>/dev/null || true
   done
 }
 

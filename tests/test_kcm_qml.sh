@@ -31,13 +31,16 @@ setup() {
   # 预置特效 fixture：install.sh 从 PREFIX/effects 现场提取 19 个池成员，
   # 与真实安装路径解耦（不触碰 ~/.local/share/kwin/effects）
   mkdir -p "$PREFIX/effects"
-  local d id
+  local d id src
   for d in "$REAL_EFFECTS"/*/; do
     [ -e "$d" ] || continue
     id="$(basename "$d")"
     mkdir -p "$PREFIX/effects/$id/contents/code"
     cp "$d/metadata.json" "$PREFIX/effects/$id/" 2>/dev/null || true
-    cp "$d/contents/code/main.js" "$PREFIX/effects/$id/contents/code/" 2>/dev/null || true
+    # fixture 必须是上游纯净态（真实环境 e2e 首装后已注入，inject.py 会 exit 2）
+    src="$d/contents/code/main.js.orig"
+    [ -e "$src" ] || src="$d/contents/code/main.js"
+    cp "$src" "$PREFIX/effects/$id/contents/code/main.js" 2>/dev/null || true
   done
 }
 
