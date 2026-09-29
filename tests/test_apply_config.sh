@@ -180,6 +180,40 @@ teardown
 # 旧版逐个 unloadEffect 会让真实会话的 19 个特效在测试后全部消失，
 # 并直接把后续 test_e2e.sh 的前置检查（loaded == 19）打成 FAIL。
 
+echo "=== test_apply_skips_third_party_effects ==="
+# P1-1 apply 侧：第三方特效（合法 metadata 无锚点 / 缺 metadata）不得让
+# apply 失败 —— 无 id 的目录不可能在池中，非池成员不送 inject.py；
+# 但池成员注入失败必须保持严格（防修复放松真问题）。
+setup
+THIRD="$PREFIX/effects/kwin6_effect_thirdparty"
+mkdir -p "$THIRD/contents/code"
+printf '{"KPlugin":{"Id":"kwin6_effect_thirdparty","Name":"Third"}}' > "$THIRD/metadata.json"
+printf '// 第三方：无 BMW 锚点\nfunction f() {}\n' > "$THIRD/contents/code/main.js"
+run apply_config
+assert_eq "$RC" "0" "有 id 无锚点的第三方不致 apply 失败"
+if grep -q 'BMW_ARBITER_BEGIN' "$THIRD/contents/code/main.js" 2>/dev/null; then
+  fail "第三方未被注入" "main.js 出现仲裁标记"
+else
+  pass "第三方未被注入"
+fi
+
+# 缺 metadata 的目录：无 id 不可能在池中 → 跳过不计失败
+NOMETA="$PREFIX/effects/kwin6_effect_ghost"
+mkdir -p "$NOMETA/contents/code"
+printf '// ghost\n' > "$NOMETA/contents/code/main.js"
+run apply_config
+assert_eq "$RC" "0" "缺 metadata 的目录不致 apply 失败"
+
+# 池成员（已在池中的 fire）锚点被破坏 → 注入失败仍必须 die（严格性保持）
+printf 'function broken() {}\n' > "$MAIN"
+run apply_config
+if [ "$RC" -ne 0 ]; then
+  pass "池成员注入失败仍报错（严格性保持）"
+else
+  fail "池成员注入失败仍报错（严格性保持）" "破坏锚点的池成员被静默放过"
+fi
+teardown
+
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -344,6 +344,34 @@ assert_eq "$NOW_PRESENT" "$KCM_INITIAL_PRESENT" "测试后系统 KCM 存在状�
 
 teardown
 
+echo "=== test_param_widget_type_fallbacks ==="
+# P1-5 + spec 4.3：参数控件按类型兜底。上游 main.xml 实测无 <min>/<max> 标签
+# （2026-09-29 全池 grep 0 文件）→ spec「min/max 来自 main.xml」无数据源，
+# 降级为类型相关固定值域：Double 必须允许负值（Tilt=-0.3 / Shift=-0.05 的
+# 负默认被 from: 0 钳为 0，onValueModified 触发即写回 0 覆盖负值）；
+# Int / String 分支按 spec 4.3（Int → SpinBox、String → TextField）补齐。
+QML_FILE="$KCM_SRC/ui/main.qml"
+if grep -A4 'type === "Double"' "$QML_FILE" | grep -qE 'from: -[0-9]'; then
+  pass "Double 控件允许负值（from < 0）"
+else
+  fail "Double 控件允许负值（from < 0）" "DoubleSpinBox from 仍非负或缺失"
+fi
+if grep -q 'type === "Int"' "$QML_FILE"; then
+  pass "Int 类型有控件分支（spec 4.3）"
+else
+  fail "Int 类型有控件分支（spec 4.3）" '未找到 type === "Int"'
+fi
+if grep -q 'type === "String"' "$QML_FILE"; then
+  pass "String 类型有控件分支（spec 4.3）"
+else
+  fail "String 类型有控件分支（spec 4.3）" '未找到 type === "String"'
+fi
+if grep -q 'min/max' "$QML_FILE"; then
+  pass "控件值域含 min/max 降级依据注释"
+else
+  fail "控件值域含 min/max 降级依据注释" "未找到降级说明"
+fi
+
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [ "$FAIL" -eq 0 ] || exit 1

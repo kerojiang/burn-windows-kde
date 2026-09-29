@@ -150,6 +150,19 @@ extract_id() { python3 -c "$EXTRACT_ID_CODE" "$1"; }
 # 池成员始终从特效目录的 metadata.json 现场提取，不在本脚本里硬编码 19 个 ID。
 # 遍历目录而非 glob metadata.json —— 否则"目录缺 metadata.json"根本进不了循环，
 # 属于完全静默的漏检。
+# 池成员资格探测：4 个注入锚点全部存在才是可注入的 BMW 特效。
+# 锚点清单与 lib/inject.py:41 ANCHORS 同源 —— 上游 main.js 结构变化时两处
+# 必须同步（届时全量回归 + 真实安装的注入数校验会暴露漂移）。
+# 已注入态不破坏锚点（注入是锚点后插码），首装/重装两种状态探测均有效。
+_has_bmw_anchors() {
+  local js="$1" a
+  [ -f "$js" ] || return 1
+  for a in '"use strict";' 'slotWindowAdded(window) {' 'slotWindowClosed(window) {' 'cleanupForcedRoles(window) {'; do
+    grep -qF -- "$a" "$js" || return 1
+  done
+  return 0
+}
+
 extract_pool() {
   local dir json id
   POOL_IDS=()
@@ -167,6 +180,12 @@ extract_pool() {
     # 占位不是池成员：它承载下拉条目与开关态，不参与随机/注入/双改造。
     # 漏跳会让二次安装（占位已在目录中）得到 20 个池成员、注入数校验 die。
     [ "$id" = "$PLACEHOLDER_ID" ] && continue
+    # 无 BMW 锚点 = 第三方特效，不入池 —— 混入会让 do_inject 送它进 inject.py
+    # 后 _die（锚点缺失 exit 2）+ set -e 中止整个安装（P1-1）
+    if ! _has_bmw_anchors "$dir/contents/code/main.js"; then
+      warn "非 BMW 特效（缺注入锚点），不入池: $id"
+      continue
+    fi
     POOL_IDS+=("$id")
   done
   POOL_CSV="$(IFS=,; echo "${POOL_IDS[*]:-}")"
@@ -236,6 +255,11 @@ do_inject() {
     fi
     # 占位无 BMW 锚点也无需仲裁：它只承载下拉条目与开关态，混入注入会 _die
     [ "$id" = "$PLACEHOLDER_ID" ] && continue
+    # 池白名单：第三方特效（extract_pool 已按锚点排除出池）不再送 inject.py
+    case ",$POOL_CSV," in
+      *",$id,"*) ;;
+      *) continue ;;
+    esac
     python3 "$INJECT_PY" \
       --effect-dir "$(dirname "$json")" \
       --effect-id "$id" \
@@ -259,9 +283,13 @@ do_kwinrc() {
     cp "$KWINRC" "$KWINRC.bak.$(date +%Y%m%d%H%M%S)"
     log "已备份 kwinrc"
   fi
-  local id
+  local id kwinrc_arg="$KWINRC"
+  # Ruling-13：真实环境用相对名 —— notify path 由文件名 sanitize 成 /kwinrc
+  # 与 KWin 订阅一致；绝对路径时 path=/home/<u>/.config/kwinrc 不匹配，通知链
+  # 不触发。prefix 隔离测试保持绝对路径（相对名会解析到真实 ~/.config 污染环境）
+  [ "$KWINRC" = "$HOME/.config/kwinrc" ] && kwinrc_arg="kwinrc"
   for id in "${POOL_IDS[@]}"; do
-    kwriteconfig6 --file "$KWINRC" --group Plugins --key "${id}Enabled" true
+    kwriteconfig6 --notify --file "$kwinrc_arg" --group Plugins --key "${id}Enabled" true
   done
   log "已写入 ${#POOL_IDS[@]} 个 Enabled=true"
 }
@@ -288,6 +316,18 @@ warn() { echo "[apply-config] 警告: \$*" >&2; }
 EXTRACT_ID_CODE='$EXTRACT_ID_CODE'
 extract_id() { python3 -c "\$EXTRACT_ID_CODE" "\$1"; }
 
+# 与 install.sh _has_bmw_anchors 同源（锚点清单 lib/inject.py:41 ANCHORS）：
+# 无 id 时用锚点定归属 —— 有锚点 = BMW 池成员（损坏须严格失败）；
+# 无锚点 = 第三方/垃圾目录（跳过不计失败，P1-1）
+has_bmw_anchors() {
+  local js="\$1" a
+  [ -f "\$js" ] || return 1
+  for a in '"use strict";' 'slotWindowAdded(window) {' 'slotWindowClosed(window) {' 'cleanupForcedRoles(window) {'; do
+    grep -qF -- "\$a" "\$js" || return 1
+  done
+  return 0
+}
+
 [ -f "\$CONFIG_FILE" ] || die "配置文件不存在: \$CONFIG_FILE"
 [ -f "\$INJECT_PY" ] || die "注入器不存在: \$INJECT_PY"
 
@@ -301,16 +341,24 @@ for dir in "\$EFFECTS_DIR"/*/; do
   json="\$dir/metadata.json"
   if [ ! -f "\$json" ]; then
     warn "缺少 metadata.json，跳过特效目录: \$dir"
-    failed=1
+    # 无 id 时锚点定归属：BMW 锚点在 = 池成员损坏 → 严格失败（旧契约）；
+    # 无锚点 = 第三方/垃圾 → 跳过不计失败（P1-1）。if 形式避 set -e 陷阱
+    if has_bmw_anchors "\$dir/contents/code/main.js"; then failed=1; fi
     continue
   fi
   if ! id="\$(extract_id "\$json")"; then
     warn "无法提取 effect id，跳过: \$json"
-    failed=1
+    if has_bmw_anchors "\$dir/contents/code/main.js"; then failed=1; fi
     continue
   fi
   # 占位无 BMW 锚点也无需仲裁：混入注入会让 inject.py _die、整个 apply 失败
   [ "\$id" = "$PLACEHOLDER_ID" ] && continue
+  # 池白名单：非池成员（第三方特效，install.sh extract_pool 已按 BMW 锚点
+  # 排除）不注入不计失败；池成员注入失败仍 failed（严格性保留，P1-1）
+  case ",\$POOL," in
+    *",\$id,"*) ;;
+    *) continue ;;
+  esac
   if ! python3 "\$INJECT_PY" --effect-dir "\$(dirname "\$json")" --effect-id "\$id" \\
         --pool "\$POOL" --blacklist "\$BLACKLIST"; then
     echo "[apply-config] 注入失败: \$id" >&2
@@ -442,7 +490,11 @@ do_apply_config() {
 main() {
   # 子命令分发（独立 apply 逻辑见 emit_apply_script，两处必须保持等价）
   if [ "$APPLY_CONFIG" -eq 1 ]; then
-    check_deps
+    # apply 不构建不测试：内联精简依赖。check_deps 在 SKIP_BUILD=0 时会
+    # need cmake/ninja/git，无构建工具的机器上黑名单变更直接 die（P1-6）
+    need python3
+    need kreadconfig6
+    need kwriteconfig6
     do_apply_config
     exit $?
   fi
@@ -475,6 +527,9 @@ main() {
   do_write_config    # 最后
 
   log "安装完成。配置: $CONFIG_FILE"
+  # Ruling-13 附带条件：运行中新建的 effect 目录需 KWin 先发现（重启扫描或
+  # 一次 loadEffect）后 --notify 通知链才可控 —— 提示用户兜底生效方式
+  log "提示: 新装特效需重启 KWin（或注销重登）后动画完整生效"
 }
 
 main "$@"

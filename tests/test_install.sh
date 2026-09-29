@@ -222,22 +222,112 @@ run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build --skip-kwinrc
 assert_output_contains "[install] 警告" "损坏的 JSON 被报告，而非被 try/except 吞掉"
 teardown
 
+echo "=== test_third_party_effect_does_not_abort_install ==="
+# P1-1：用户 effects 目录存在第三方特效（合法 metadata 可提取 id、main.js
+# 无 BMW 注入锚点）时，安装不得中止（inject.py 锚点缺失 _die + set -e 会
+# 直接退出），第三方不入池、不注入、不被 metadata 双改造。
+setup
+THIRD="$PREFIX/effects/kwin6_effect_thirdparty"
+mkdir -p "$THIRD/contents/code"
+printf '{"KPlugin":{"Id":"kwin6_effect_thirdparty","Name":"Third Party"}}' > "$THIRD/metadata.json"
+printf '// 第三方特效：无 slotWindowAdded 等 BMW 锚点\nfunction animate() {}\n' > "$THIRD/contents/code/main.js"
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build --skip-kwinrc
+assert_eq "$RC" "0" "第三方特效不中止安装（退出码 0）"
+if grep -q 'BMW_ARBITER_BEGIN' "$THIRD/contents/code/main.js" 2>/dev/null; then
+  fail "第三方特效未被注入" "main.js 出现仲裁锚点标记"
+else
+  pass "第三方特效未被注入"
+fi
+POOL_NOW="$(kreadconfig6 --file "$PREFIX/burn-window-randomrc" --group General --key Pool 2>/dev/null || true)"
+case "$POOL_NOW" in
+  *kwin6_effect_thirdparty*) fail "第三方不入池" "Pool 含 thirdparty: $POOL_NOW" ;;
+  *) pass "第三方不入池" ;;
+esac
+if grep -q 'X-KWin-Internal' "$THIRD/metadata.json" 2>/dev/null; then
+  fail "第三方 metadata 未被双改造" "被写入 X-KWin-Internal"
+else
+  pass "第三方 metadata 未被双改造"
+fi
+# 池成员数 = fixture 池成员数（setup 复制真实 effects：19 BMW + 占位，占位不入池）
+N_POOL="$(printf '%s' "$POOL_NOW" | tr ',' '\n' | grep -c . || true)"
+REAL_N=0
+for d in "$REAL_EFFECTS"/*/; do
+  b="$(basename "$d")"
+  [ "$b" = "kwin6_effect_bmw_random" ] && continue
+  [ -d "$d" ] && REAL_N=$((REAL_N + 1))
+done
+assert_eq "$N_POOL" "$REAL_N" "池成员数与真实 BMW 特效数一致（第三方被排除）"
+teardown
+
+echo "=== test_apply_config_skips_build_deps ==="
+# P1-6：--apply-config 是 KCM Apply 的非交互入口（免 sudo、不构建），不得走
+# 构建依赖闸 —— check_deps 在 SKIP_BUILD=0 时 need cmake/ninja/git，无构建
+# 工具的机器上黑名单变更直接 die。受限 PATH 行为断言被 realpath 等基础命令
+# 的清单脆性破坏（实测 mock 缺 realpath 在行 84 早退、断言语义失真），
+# 改为静态断言：分支体不调 check_deps、内联精简依赖。
+APPLY_BRANCH="$(awk '/^  if \[ "\$APPLY_CONFIG" -eq 1 \]/{f=1} f{print} f && /^  fi$/{exit}' "$INSTALL")"
+# 只断言代码行：注释提及 check_deps（解释设计取舍）不算调用
+APPLY_BRANCH_CODE="$(printf '%s\n' "$APPLY_BRANCH" | grep -v '^[[:space:]]*#' || true)"
+case "$APPLY_BRANCH_CODE" in
+  *check_deps*) fail "apply-config 分支不调用 check_deps" "分支代码仍调用 check_deps" ;;
+  *) pass "apply-config 分支不调用 check_deps" ;;
+esac
+case "$APPLY_BRANCH" in
+  *need\ python3*) pass "apply-config 分支内联精简依赖（need python3）" ;;
+  *) fail "apply-config 分支内联精简依赖（need python3）" "分支体未找到 need python3" ;;
+esac
+
+echo "=== test_kwinrc_write_uses_notify_with_relative_path ==="
+# P1-2 + Ruling-13：写 Enabled 键必须带 --notify 且用相对名 kwinrc —— 绝对
+# 路径时 notify path=/home/.../kwinrc ≠ KWin 订阅的 /kwinrc，通知链不触发；
+# 完成提示须告知新装特效的生效方式（KWin 发现目录后通知链才可控）。
+# 实现为条件变量（prefix 隔离保持绝对路径、真实环境赋相对名 kwinrc），
+# 组合断言：写键行带 --notify --file "$kwinrc_arg" + 真实环境分支赋值 kwinrc
+if grep -q 'kwriteconfig6 --notify --file "$kwinrc_arg" --group Plugins' "$INSTALL" \
+   && grep -q 'kwinrc_arg="kwinrc"' "$INSTALL"; then
+  pass "写键带 --notify 且真实环境用相对名 kwinrc"
+else
+  fail "写键带 --notify 且真实环境用相对名 kwinrc" "未找到 --notify 写键行或 kwinrc 相对名赋值"
+fi
+if grep -q '重启 KWin' "$INSTALL"; then
+  pass "安装完成提示含「重启 KWin」生效说明"
+else
+  fail "安装完成提示含「重启 KWin」生效说明" "完成提示未告知生效方式"
+fi
+
 echo "=== test_real_sudo_failure_keeps_user_install_hint ==="
 # Minor-1：真实 `sudo install` 失败走 set -e 直接退出、不经 die，因此没有
 # Task3 Step3 要求的"已保留的用户级安装"提示（只有 --fail-sudo 分支才有）。
 # setsid 让脚本脱离控制终端 → Arch 的 sudo 必然要求密码而失败，复现真实提权失败。
 KCM_SO="$ROOT/kcm/build/bin/plasma/kcms/systemsettings/kcm_burnwindow.so"
+# 系统生产落点（install.sh:27 KCM_DEST）—— 假 .so 绝不能落到这里
+REAL_KCM_DEST="/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so"
 if [ -e "$KCM_SO" ]; then
-  skip "真实 sudo 失败时的用户级安装提示" "kcm/build 已有产物，避免覆盖"
+  skip "提权失败时的用户级安装提示" "kcm/build 已有产物，避免覆盖"
 else
   setup
   mkdir -p "$(dirname "$KCM_SO")"
   printf 'fake-so-for-sudo-fail-test' > "$KCM_SO"
-  run setsid bash "$INSTALL" --prefix "$PREFIX" --skip-build --skip-kwinrc < /dev/null
-  assert_exit_code_nonzero "真实 sudo install 失败 → 退出码非 0"
+  # 注入式假 sudo（P1-4 终版）：真实 setsid+sudo 失败会给 pam_faillock 计
+  # 一次失败 —— 2026-09-29 实测累计达阈值后账户临时锁定，殃及后续 kcm
+  # 套件连正确密码都被拒（journal: pam_faillock temporarily locked）；
+  # 且 SUDO_PASSWORD 在场时真实提权会把 30B 假 .so 写进系统生产路径。
+  # 假 sudo 对 -n 探测与实际提权一律失败：不碰 PAM、不依赖 tty/缓存，
+  # 确定性覆盖 install.sh 的提权失败错误处理路径。
+  FAKE_BIN="$(mktemp -d /tmp/bmw-fakesudo.XXXXXX)"
+  printf '#!/bin/sh\nif [ "$1" = "-n" ]; then exit 1; fi\necho "sudo: 模拟提权失败（测试注入）" >&2\nexit 1\n' > "$FAKE_BIN/sudo"
+  chmod +x "$FAKE_BIN/sudo"
+  run env PATH="$FAKE_BIN:$PATH" bash "$INSTALL" --prefix "$PREFIX" --skip-build --skip-kwinrc < /dev/null
+  assert_exit_code_nonzero "提权失败（假 sudo）→ 退出码非 0"
   assert_output_contains "KCM 安装失败" "失败原因被显式打印（不是被 set -e 静默退出）"
   assert_output_contains "已保留的用户级安装" "提示已保留的用户级安装仍可用"
   assert_not_exists "$PREFIX/burn-window-randomrc" "配置未写入（半安装不留标志）"
+  if grep -q 'fake-so-for-sudo-fail-test' "$REAL_KCM_DEST" 2>/dev/null; then
+    fail "系统 KCM 生产落点未被测试桩污染" "$REAL_KCM_DEST 含 fake-so 内容"
+  else
+    pass "系统 KCM 生产落点未被测试桩污染"
+  fi
+  rm -rf "$FAKE_BIN"
   rm -f "$KCM_SO"
   rmdir -p "$(dirname "$KCM_SO")" 2>/dev/null || true
   teardown

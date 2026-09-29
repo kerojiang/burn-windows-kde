@@ -117,6 +117,11 @@ KCMUtils.SimpleKCM {
                                 text: paramRow.modelData.name
                             }
 
+                            // 值域降级依据（P1-5）：spec 4.3 要求 min/max 来自
+                            // main.xml 的 <min>/<max>，但上游 19 特效 main.xml 实测
+                            // 无该标签（2026-09-29 全池 grep 0 文件）→ 无数据源，按
+                            // 类型给固定兜底值域（UInt 非负 / Int 双向 / Double 双向，
+                            // Double 负下限覆盖实测负默认 Tilt=-0.3、Shift=-0.05）。
                             // UInt：整数 [0, 65535]（全池实测最大 1500，留覆盖余量）
                             QQC2.SpinBox {
                                 visible: paramRow.modelData.type === "UInt"
@@ -127,16 +132,35 @@ KCMUtils.SimpleKCM {
                                 onValueModified: kcm.setParam(effectRoot.modelData.effectId, paramRow.modelData.name, String(value))
                             }
 
-                            // Double：Qt 6.11 专用 DoubleSpinBox（计划钉值 decimals=2 stepSize=0.01）
+                            // Int：有符号整数（spec 4.3 Int → SpinBox）
+                            QQC2.SpinBox {
+                                visible: paramRow.modelData.type === "Int"
+                                editable: true
+                                from: -32768
+                                to: 32767
+                                value: Number(paramRow.modelData.value) || 0
+                                onValueModified: kcm.setParam(effectRoot.modelData.effectId, paramRow.modelData.name, String(value))
+                            }
+
+                            // Double：Qt 6.11 专用 DoubleSpinBox（decimals=2 stepSize=0.01）
+                            // from 必须允许负值 —— from: 0 会把 Tilt/Shift 的负默认钳为 0，
+                            // onValueModified 触发即写回 0 覆盖负值（reviewer P1-5）
                             QQC2.DoubleSpinBox {
                                 visible: paramRow.modelData.type === "Double"
                                 editable: true
-                                from: 0
+                                from: -1000
                                 to: 1000
                                 decimals: 2
                                 stepSize: 0.01
                                 value: Number(paramRow.modelData.value) || 0
                                 onValueModified: kcm.setParam(effectRoot.modelData.effectId, paramRow.modelData.name, String(value))
+                            }
+
+                            // String：自由文本（spec 4.3 String → TextField）
+                            QQC2.TextField {
+                                visible: paramRow.modelData.type === "String"
+                                text: String(paramRow.modelData.value)
+                                onEditingFinished: kcm.setParam(effectRoot.modelData.effectId, paramRow.modelData.name, text)
                             }
 
                             // Bool
