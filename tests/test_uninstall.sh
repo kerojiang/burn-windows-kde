@@ -49,6 +49,12 @@ assert_exists() { # 路径 标签
 assert_absent_or_equal() { # 实际文件 期望文件 标签
   if cmp -s "$1" "$2"; then pass "$3"; else fail "$3" "内容不一致: $1"; fi
 }
+assert_output_contains() { # 子串 标签
+  case "$OUTPUT" in
+    *"$1"*) pass "$2" ;;
+    *) fail "$2" "输出应包含 [$1]" ;;
+  esac
+}
 
 setup() {
   PREFIX="$(mktemp -d /tmp/bmw-uninstall-prefix.XXXXXX)"
@@ -241,6 +247,78 @@ else
 fi
 V3="$(kreadconfig6 --file "$KWINRC" --group Windows --key BorderlessMaximizedWindows 2>/dev/null)"
 assert_eq "$V3" "true" "二次卸载后用户配置仍在"
+
+# ================================================================ 8. prefix 路径闸
+echo "=== test_uninstall_prefix_rejects_root_and_home ==="
+# 审查 M-3：uninstall.sh 原 41 行只判 --prefix 非空、215 行直接 rm -rf
+# "$LIBEXEC_DIR" —— `--prefix "$HOME"` 会 rm -rf "$HOME/libexec"，
+# `--prefix /` 会尝试 rm -rf /libexec。两者都必须被拒绝。
+# KCM 目标固定指向临时文件，避免本用例把系统 KCM 当成清理对象。
+SAFE_KCM="$TMPDIR_TEST/fake-kcm.so"
+printf 'kcm-stub' > "$SAFE_KCM"
+
+# 对照组：正常 prefix 行为不变
+run bash "$ROOT/uninstall.sh" --prefix "$PREFIX" --skip-sudo
+assert_eq "$RC" "0" "正常 prefix（mktemp 目录）行为不变"
+
+run env BURN_WINDOW_KCM_DEST="$SAFE_KCM" bash "$ROOT/uninstall.sh" --prefix / --skip-sudo
+if [ "$RC" -ne 0 ]; then pass "--prefix / 被拒绝（非零退出）"; else fail "--prefix / 被拒绝（非零退出）" "退出码 0"; fi
+assert_output_contains "--prefix 不得为" "拒绝原因写 stderr（证明是被闸门拒绝，而非后续步骤失败）"
+
+# --prefix $HOME：在 $HOME/libexec 放哨兵，跑完必须还在（无删除副作用）
+GUARD_DIR="$HOME/libexec"
+CREATED_GUARD=0
+if [ ! -d "$GUARD_DIR" ]; then mkdir -p "$GUARD_DIR"; CREATED_GUARD=1; fi
+GUARD="$GUARD_DIR/bmw-prefix-guard"
+printf 'guard' > "$GUARD"
+
+run env BURN_WINDOW_KCM_DEST="$SAFE_KCM" bash "$ROOT/uninstall.sh" --prefix "$HOME" --skip-sudo
+if [ "$RC" -ne 0 ]; then pass "--prefix \$HOME 被拒绝（非零退出）"; else fail "--prefix \$HOME 被拒绝（非零退出）" "退出码 0"; fi
+assert_output_contains "--prefix 不得为" "拒绝原因写 stderr"
+if [ -f "$GUARD" ]; then
+  pass "\$HOME/libexec 哨兵未被删除（无删除副作用）"
+else
+  fail "\$HOME/libexec 哨兵未被删除（无删除副作用）" "哨兵被 rm -rf 掉了"
+fi
+rm -f "$GUARD"
+[ "$CREATED_GUARD" -eq 1 ] && rmdir "$GUARD_DIR" 2>/dev/null
+
+# ================================================================ 9. kwinrc 失败必须保留还原能力
+echo "=== test_kwinrc_failure_keeps_orig_backups ==="
+# Minor-8：还原注入会 `rm -f "$orig"`（uninstall.sh:195），而 kwinrc 条目清理在它之后
+# （uninstall.sh:204-225）。当 kwriteconfig6 失败时脚本 exit 1（uninstall.sh:223），
+# 此时 .orig 已被删除 —— 而无配置文件时 POOL_IDS 的唯一来源正是 .orig 扫描
+# （uninstall.sh:119-123），重跑即因 POOL_IDS 为空而对 19 条 *Enabled 静默不清理。
+# 因此 kwinrc 清理必须先于还原，失败时备份仍在、可原地重跑。
+teardown   # 前面用例已把 prefix 卸载干净，这里另起一个完整安装作为本用例现场
+setup || { echo; echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"; exit 1; }
+SAFE_KCM="$TMPDIR_TEST/fake-kcm-so"
+printf 'kcm-stub' > "$SAFE_KCM"
+ORIG_BEFORE="$(ls "$EFFECTS"/*/contents/code/main.js.orig 2>/dev/null | wc -l | tr -d ' ')"
+
+# 把 kwinrc 换成同名目录：kwriteconfig6 打开必然失败（实测 rc=2）
+rm -f "$KWINRC"
+mkdir "$KWINRC"
+
+run env BURN_WINDOW_KCM_DEST="$SAFE_KCM" bash "$ROOT/uninstall.sh" --prefix "$PREFIX" --skip-sudo
+if [ "$RC" -ne 0 ]; then
+  pass "kwinrc 清理失败 → 卸载非零退出（失败不被静默吞掉）"
+else
+  fail "kwinrc 清理失败 → 卸载非零退出" "退出码 0"
+fi
+
+ORIG_AFTER="$(ls "$EFFECTS"/*/contents/code/main.js.orig 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$ORIG_AFTER" "$ORIG_BEFORE" "kwinrc 失败时 .orig 备份原样保留（还原未被提前执行，可重跑）"
+
+INJECTED_AFTER="$(grep -l 'BMW_ARBITER_BEGIN' "$EFFECTS"/*/contents/code/main.js 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$INJECTED_AFTER" -gt 0 ]; then
+  pass "main.js 注入标记仍在（未出现'已还原但 kwinrc 残留'的半卸载）"
+else
+  fail "main.js 注入标记仍在" "全部已被提前还原（$INJECTED_AFTER）"
+fi
+
+# 现场清理：恢复 kwinrc 为文件、重新卸载干净，避免影响后续
+rm -rf "$KWINRC"
 
 # ---------------------------------------------------------------- 环境恢复
 unset BURN_WINDOW_KCM_DEST

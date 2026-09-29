@@ -158,6 +158,76 @@ assert_eq "$INJECTED" "19" "19 个 main.js 均被注入"
 assert_eq "$(ls "$PREFIX"/effects/*/contents/code/main.js.orig 2>/dev/null | wc -l)" "19" "19 份 .orig 备份齐全"
 teardown
 
+echo "=== test_broken_metadata_is_reported_not_skipped ==="
+# 审查 M-5：id 提取在 extract_pool(原 105)/do_inject(原 141)/apply 脚本(原 195)
+# 三处各写一份、行为不一致，且 extract_pool 的 try/except 吞异常、
+# `[ -n "$id" ] || continue` 静默跳过 —— 同一坏文件三种结局，池成员可能取到 id
+# 而注入取不到 → 抽签选中未注入特效 → 当次无动画（哑弹）。
+# 三种坏数据都必须被显式报告（诊断含 [install] 警告），不得静默跳过。
+
+# 场景 1：特效目录缺 metadata.json
+setup
+BROKEN="$PREFIX/effects/kwin6_effect_broken"
+mkdir -p "$BROKEN/contents/code"
+printf 'console.log("x");\n' > "$BROKEN/contents/code/main.js"
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build --skip-kwinrc
+assert_output_contains "[install] 警告" "缺 metadata.json 被报告，而非静默跳过"
+
+# 场景 2：metadata.json 缺 id 字段
+setup
+printf '{"KPlugin":{"Name":"NoIdHere"}}' > "$PREFIX/effects/kwin6_effect_fire/metadata.json"
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build --skip-kwinrc
+assert_output_contains "[install] 警告" "缺 id 字段被报告，而非静默跳过"
+
+# 场景 3：metadata.json 损坏（JSON 不可解析）
+setup
+printf '{broken json' > "$PREFIX/effects/kwin6_effect_fire/metadata.json"
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build --skip-kwinrc
+assert_output_contains "[install] 警告" "损坏的 JSON 被报告，而非被 try/except 吞掉"
+teardown
+
+echo "=== test_real_sudo_failure_keeps_user_install_hint ==="
+# Minor-1：真实 `sudo install` 失败走 set -e 直接退出、不经 die，因此没有
+# Task3 Step3 要求的"已保留的用户级安装"提示（只有 --fail-sudo 分支才有）。
+# setsid 让脚本脱离控制终端 → Arch 的 sudo 必然要求密码而失败，复现真实提权失败。
+KCM_SO="$ROOT/kcm/build/bin/plasma/kcms/systemsettings/kcm_burnwindow.so"
+if [ -e "$KCM_SO" ]; then
+  skip "真实 sudo 失败时的用户级安装提示" "kcm/build 已有产物，避免覆盖"
+else
+  setup
+  mkdir -p "$(dirname "$KCM_SO")"
+  printf 'fake-so-for-sudo-fail-test' > "$KCM_SO"
+  run setsid bash "$INSTALL" --prefix "$PREFIX" --skip-build --skip-kwinrc < /dev/null
+  assert_exit_code_nonzero "真实 sudo install 失败 → 退出码非 0"
+  assert_output_contains "KCM 安装失败" "失败原因被显式打印（不是被 set -e 静默退出）"
+  assert_output_contains "已保留的用户级安装" "提示已保留的用户级安装仍可用"
+  assert_not_exists "$PREFIX/burn-window-randomrc" "配置未写入（半安装不留标志）"
+  rm -f "$KCM_SO"
+  rmdir -p "$(dirname "$KCM_SO")" 2>/dev/null || true
+  teardown
+fi
+
+echo "=== test_prefix_rejects_root_and_home ==="
+# 路径闸（审查 M-3）：--prefix / 会写 /libexec 等系统路径，--prefix $HOME
+# 会 rm -rf $HOME/libexec —— 两者都必须被拒绝，且不得留下任何写入/删除副作用。
+setup
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build --skip-kwinrc
+assert_exit_code_zero "正常 prefix（mktemp 目录）行为不变"
+
+run bash "$INSTALL" --prefix / --skip-build --skip-sudo
+assert_exit_code_nonzero "--prefix / 被拒绝（非零退出）"
+assert_output_contains "--prefix 不得为" "拒绝原因写 stderr（证明是被闸门拒绝，而非后续步骤失败）"
+assert_not_exists "/burn-window-randomrc" "未在 / 写入配置"
+assert_not_exists "/effects" "未在 / 创建特效目录"
+
+run bash "$INSTALL" --prefix "$HOME" --skip-sudo --skip-build
+assert_exit_code_nonzero "--prefix \$HOME 被拒绝（非零退出）"
+assert_output_contains "--prefix 不得为" "拒绝原因写 stderr"
+assert_not_exists "$HOME/burn-window-randomrc" "未在 \$HOME 顶层写配置"
+assert_not_exists "$HOME/burn-window-apply-config.sh" "未在 \$HOME 顶层写 apply 脚本"
+assert_not_exists "$HOME/kwinrc" "未在 \$HOME 顶层写 kwinrc"
+teardown
+
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [ "$FAIL" -eq 0 ] || exit 1

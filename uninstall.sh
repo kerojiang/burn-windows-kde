@@ -3,9 +3,9 @@
 #
 # 清理项与 install.sh 的产物一一对应：
 #   1. KWin 内存中已加载的池特效（unloadEffect；非 --prefix 模式）
-#   2. 注入到 main.js 的仲裁代码 —— 从 main.js.orig 还原
-#   3. main.js.orig 备份本身
-#   4. kwinrc 中池成员的 *Enabled 条目
+#   2. kwinrc 中池成员的 *Enabled 条目 —— 必须先于还原，否则 .orig 删除后池成员无从推导
+#   3. 注入到 main.js 的仲裁代码 —— 从 main.js.orig 还原
+#   4. main.js.orig 备份本身（确认还原后删除）
 #   5. kwinrc 的 *.bak.* 备份（安装时产生）
 #   6. 配置文件 burn-window-randomrc
 #   7. apply 脚本 burn-window-apply-config.sh
@@ -46,8 +46,32 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+
+# ---------------------------------------------------------------- prefix 路径闸
+# --prefix 是"把写入重定向到临时目录"的测试隔离参数，不是任意路径开关：
+#   * 必须是绝对路径 —— 相对路径随调用方 cwd 漂移，行为不可预期；
+#   * realpath 后不得为 / —— 否则 EFFECTS_DIR=/effects、LIBEXEC_DIR=/libexec；
+#   * realpath 后不得为 $HOME —— uninstall.sh 的 rm -rf "$LIBEXEC_DIR" 会变成
+#     rm -rf "$HOME/libexec"，删掉用户自己的目录（审查 M-3）。
+# realpath -m：目标尚不存在也返回规范化结果（prefix 常是还没创建的目录）。
+validate_prefix() {
+  local raw="$1" real home_real
+  case "$raw" in
+    /*) ;;
+    *)  die "--prefix 必须是绝对路径: $raw" ;;
+  esac
+  real="$(realpath -m -- "$raw")"
+  home_real="$(realpath -m -- "$HOME")"
+  [ "$real" != "/" ] || die "--prefix 不得为根目录 /（会操作 /libexec 等系统路径）"
+  [ "$real" != "$home_real" ] || die "--prefix 不得为 \$HOME（会 rm -rf \$HOME/libexec 等真实目录）"
+}
+
 # ---------------------------------------------------------------- 路径解析
-# 与 install.sh 的路径约定逐项对齐（install.sh 65-76 行）
+# 与 install.sh 的路径约定逐项对齐（install.sh 路径解析段）
+if [ -n "$PREFIX" ]; then
+  validate_prefix "$PREFIX"
+fi
+
 if [ -n "$PREFIX" ]; then
   EFFECTS_DIR="$PREFIX/effects"
   CONFIG_FILE="$PREFIX/burn-window-randomrc"
@@ -132,8 +156,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   else
     log "  1. 跳过 KWin unload（--prefix 隔离模式不触碰真实 KWin）"
   fi
-  log "  2. 还原 $RESTORE_N 个 main.js（从 .orig），删除 $ORIG_N 个 .orig"
-  log "  3. 移除 kwinrc 中 ${#POOL_IDS[@]} 个池成员 Enabled 条目"
+  log "  2. 移除 kwinrc 中 ${#POOL_IDS[@]} 个池成员 Enabled 条目"
+  log "  3. 还原 $RESTORE_N 个 main.js（从 .orig），删除 $ORIG_N 个 .orig"
   log "  4. 删除 $KWINRC_BAK_N 个 kwinrc 备份"
   log "  5. 删除配置: $CONFIG_FILE"
   log "  6. 删除 apply 脚本: $APPLY_SCRIPT"
@@ -154,30 +178,10 @@ if [ -z "$PREFIX" ] && command -v qdbus6 >/dev/null 2>&1 && [ "${#POOL_IDS[@]}" 
   log "已从 KWin 卸载 $unloaded/${#POOL_IDS[@]} 个特效"
 fi
 
-# ---------------------------------------------------------------- 2. 还原注入
-restored=0
-dropped_backup=0
-for orig in "$EFFECTS_DIR"/*/contents/code/main.js.orig; do
-  [ -e "$orig" ] || continue
-  main="${orig%.orig}"
-  if grep -q 'BMW_ARBITER_BEGIN' "$main" 2>/dev/null; then
-    cp "$orig" "$main"
-    restored=$((restored + 1))
-  else
-    # main.js 已不含注入标记（此前已还原或注入中断），不得用备份覆盖
-    dropped_backup=$((dropped_backup + 1))
-    warn "$main 未含注入标记，仅删除备份不覆盖文件"
-  fi
-  rm -f "$orig"
-done
-log "已还原 $restored 个 main.js，删除 $ORIG_N 个 .orig"
-if [ "$dropped_backup" -gt 0 ]; then
-  # 这类备份对应的 main.js 已不含注入标记（此前被手工还原或注入中断），
-  # 只删备份不覆盖文件；必须显式报告，否则"未还原"会被完成日志掩盖
-  warn "其中 $dropped_backup 个 main.js 已不含注入标记，仅删除备份未覆盖文件"
-fi
-
-# ---------------------------------------------------------------- 3. kwinrc 条目
+# ---------------------------------------------------------------- 2. kwinrc 条目
+# 必须先于还原注入：还原会删掉 main.js.orig（下方 3），而无配置文件时 POOL_IDS
+# 的唯一来源正是 .orig 扫描（上方"池成员收集"）。若先还原、再因 kwriteconfig6
+# 失败 exit 1，重跑时 POOL_IDS 为空 → 这些 *Enabled 条目被静默永久残留。
 if [ "${#POOL_IDS[@]}" -gt 0 ]; then
   removed_keys=0
   failed_keys=""
@@ -198,6 +202,29 @@ if [ "${#POOL_IDS[@]}" -gt 0 ]; then
     warn "卸载不完整：请检查 $KWINRC 权限后重跑"
     exit 1
   fi
+fi
+
+# ---------------------------------------------------------------- 3. 还原注入
+restored=0
+dropped_backup=0
+for orig in "$EFFECTS_DIR"/*/contents/code/main.js.orig; do
+  [ -e "$orig" ] || continue
+  main="${orig%.orig}"
+  if grep -q 'BMW_ARBITER_BEGIN' "$main" 2>/dev/null; then
+    cp "$orig" "$main"
+    restored=$((restored + 1))
+  else
+    # main.js 已不含注入标记（此前已还原或注入中断），不得用备份覆盖
+    dropped_backup=$((dropped_backup + 1))
+    warn "$main 未含注入标记，仅删除备份不覆盖文件"
+  fi
+  rm -f "$orig"
+done
+log "已还原 $restored 个 main.js，删除 $ORIG_N 个 .orig"
+if [ "$dropped_backup" -gt 0 ]; then
+  # 这类备份对应的 main.js 已不含注入标记（此前被手工还原或注入中断），
+  # 只删备份不覆盖文件；必须显式报告，否则"未还原"会被完成日志掩盖
+  warn "其中 $dropped_backup 个 main.js 已不含注入标记，仅删除备份未覆盖文件"
 fi
 
 # ---------------------------------------------------------------- 4. kwinrc 备份
@@ -243,7 +270,7 @@ if [ -e "$KCM_DEST" ]; then
 fi
 
 # ---------------------------------------------------------------- 9. 特效目录
-# 必须排在 unload(1) 与 kwinrc Enabled 移除(3) 之后：此时 KWin 已不再引用
+# 必须排在 unload(1) 与 kwinrc Enabled 移除(2) 之后：此时 KWin 已不再引用
 # 这些目录，删除不会留下"注册项指向不存在目录"的悬空状态。
 # id 校验是 rm -rf 的安全闸 —— POOL_IDS 可来自配置文件（可被外部写入），
 # 含路径分隔符、点目录、或以 - 开头的成员一律拒绝

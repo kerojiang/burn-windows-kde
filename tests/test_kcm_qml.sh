@@ -253,6 +253,9 @@ echo "=== test_qml_renders_probe_to_journal ==="
 launch_and_collect
 assert_contains "BMW_KCM_QML_LOADED" "QML 探针进入 journal"
 assert_contains "BMW_KCM_QML_URL=qrc:/kcm/kcm_burnwindow/main.qml" "QRC 路径正确（探针主动输出自身 URL）"
+# 审查 M-6：applyRunning 原是死属性（kcm.h:28-29 声称"QML 用它禁用 Apply 按钮"，
+# 但 main.qml 中 grep applyRunning 零命中）。断言 QML 真的读取了它。
+assert_contains "BMW_KCM_APPLY_RUNNING=false" "QML 读取 kcm.applyRunning（初始为 false）"
 
 # ================================================================ 2. checked 反映黑名单
 echo "=== test_checkbox_checked_reflects_blacklist ==="

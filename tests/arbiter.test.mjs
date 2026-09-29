@@ -73,6 +73,26 @@ test("cleanup 后重新抽签", () => {
   assert.equal(w.data(OPEN_ROLE), null);
 });
 
+test("残留 winner 已被拉黑：不复用，重新抽签", () => {
+  // 审查 M-4：注入点位于上游 `if (effects.hasActiveFullScreenEffect) return;`
+  // 之前，winner 抽出后若因该判断提前 return 就没有动画、也没有 animationEnded
+  // 触发 cleanupForcedRoles，winner 会留到窗口销毁；期间 --apply-config 只重写
+  // 文件并 reload 特效，不清除 window 的 role 数据。
+  const w = fakeWindow();
+  w.setData(OPEN_ROLE, "b"); // 残留 winner = b
+  // 池含 a/b/c，b 已入黑名单 → 不得继续复用 b
+  const plays = bmwShouldPlay(w, OPEN_ROLE, "a", ["a", "b", "c"], ["b"], sequence(0.0));
+  assert.notEqual(w.data(OPEN_ROLE), "b", "已被拉黑的 winner 不得被复用");
+  assert.equal(plays, true, "重抽后应由 eligible 中的特效播放");
+});
+
+test("残留 winner + 池清空：返回 false（不复用旧结果）", () => {
+  // 空池（黑名单全选）路径必须对残留 winner 同样生效
+  const w = fakeWindow();
+  w.setData(OPEN_ROLE, "a");
+  assert.equal(bmwShouldPlay(w, OPEN_ROLE, "a", [], [], () => 0.5), false);
+});
+
 test("兼容 window.data 未设置时返回 undefined 与 null 两种情况", () => {
   // KWin 真实返回值未实测确认，两种都必须被当作"未设置"并触发抽签。
   const wUndefined = {

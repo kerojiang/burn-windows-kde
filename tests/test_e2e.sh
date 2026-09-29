@@ -119,11 +119,27 @@ apply_config() {
   bash "$ROOT/install.sh" --apply-config >/dev/null 2>&1
 }
 
+# 黑名单恢复（幂等）。用例 3/4 会把 Blacklist 写成 fire / 全池，若只在脚本末尾
+# 恢复，中途 Ctrl-C 或异常退出就会把用户的真实配置留在全黑名单状态 —— 下次窗口
+# 开合不播任何特效且无任何提示。故同时挂在 trap EXIT 上，任何退出路径都兜底还原。
+BLACKLIST_RESTORED=0
+restore_blacklist() {
+  [ "$BLACKLIST_RESTORED" -eq 1 ] && return 0   # 正常路径与 trap EXIT 只恢复一次
+  BLACKLIST_RESTORED=1
+  [ "$INSTALLED" -eq 1 ] || return 0            # 未安装时不动用户配置
+  kwriteconfig6 --file "$CONFIG" --group General --key Blacklist ""
+  if apply_config; then
+    echo "  已恢复: Blacklist 为空"
+  else
+    echo "  恢复失败，请手动执行: bash install.sh --apply-config"
+  fi
+}
+
 # ---------------------------------------------------------------- 前置
 
 echo "=== 前置检查 ==="
 TMP="$(mktemp -d /tmp/bmw-e2e.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'restore_blacklist; rm -rf "$TMP"' EXIT
 
 LOADED_N="$(loaded_bmw | wc -l | tr -d ' ')"
 if [ "$LOADED_N" -eq 0 ]; then
@@ -294,13 +310,19 @@ fi
 # 测试 4 结束时黑名单为全量，必须恢复为空，使测试结束 = 正常安装态
 echo
 echo "恢复全池状态（Blacklist 置空 + 重新注入）"
-if [ "$INSTALLED" -eq 1 ]; then
-  kwriteconfig6 --file "$CONFIG" --group General --key Blacklist ""
-  if apply_config; then
-    echo "  已恢复: Blacklist 为空"
-  else
-    echo "  恢复失败，请手动执行: bash install.sh --apply-config"
-  fi
+restore_blacklist
+
+# ================================================================ 6. 黑名单恢复挂在退出钩子上
+echo "=== test_blacklist_restored_on_any_exit ==="
+# Minor-9：用例 3/4 会把 Blacklist 写成 fire / 全池，正常恢复只写在脚本末尾
+# （下方"恢复全池"段）。中途 Ctrl-C、set -e 提前退出或断言路径 return 时，
+# 用户的真实配置就停留在全黑名单状态 —— 下一次窗口开合不播任何特效，且无提示。
+# 恢复必须经 trap EXIT 兜底，静态断言确认钩子确实注册在本脚本上。
+run grep -E "^trap .*restore_blacklist.* EXIT" "$0"
+if [ "$RC" -eq 0 ]; then
+  pass "黑名单恢复已挂到 trap EXIT（任何退出路径都会还原）"
+else
+  fail "黑名单恢复已挂到 trap EXIT" "未在 $0 找到含 restore_blacklist 的 trap EXIT 行"
 fi
 
 echo

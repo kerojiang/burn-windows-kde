@@ -33,6 +33,14 @@ BurnWindowKCM::BurnWindowKCM(QObject *parent, const KPluginMetaData &metaData)
             // 使该诊断同时验证 save()→apply() 已接通
             save();
             std::fprintf(stderr, "BMW_KCM_DIAG_APPLY_OUTPUT=%s\n", qPrintable(m_applyOutput));
+            // RF5「按钮状态恢复」用诊断输出代替 GUI 操作：
+            // applyRunning 必须已归零（finishApply 是唯一收口，走不到它就会
+            // 永远停在 running）；needsSave 失败路径保持 true，使框架按钮
+            // 仍可点击重试（按钮可用性由基类 needsSave 驱动）。
+            std::fprintf(stderr, "BMW_KCM_DIAG_APPLY_RUNNING=%s\n",
+                         m_applyRunning ? "true" : "false");
+            std::fprintf(stderr, "BMW_KCM_DIAG_APPLY_NEEDSSAVE=%s\n",
+                         needsSave() ? "true" : "false");
             std::fflush(stderr);
             QCoreApplication::exit(0);
         });
@@ -178,8 +186,11 @@ void BurnWindowKCM::save()
     apply();
 }
 
-// 每条 return 路径都必须经过这里：applyRunning 归零才能让 Apply 按钮恢复可用，
-// 否则一次超时/启动失败会把按钮永久锁死。
+// 每条 return 路径都必须经过这里：applyRunning 归零 + applyOutput 通告，
+// 否则一次超时/启动失败会让状态永远停在 running。
+// 框架 Apply 按钮的可用性由基类 needsSave 驱动，不由 applyRunning 驱动
+// （kcmutils 的 QML 内容侧没有按钮 enabled 的接入点，见 kquickconfigmodule.h
+// 的 ConfigModule 附加属性，只暴露 buttons 与 needsSave）。
 // ok=false 时保持 needsSave=true —— 黑名单虽已写入配置但注入未生效，
 // 必须让用户能再次点击 Apply 重试。
 void BurnWindowKCM::finishApply(bool ok)

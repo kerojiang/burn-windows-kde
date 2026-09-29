@@ -156,6 +156,17 @@ assert_stderr_contains "配置文件不存在" "诊断写 stderr"
 assert_files_identical "$PREFIX/main.before" "$MAIN" "main.js 未被改动（不静默用默认值覆盖）"
 teardown
 
+echo "=== test_apply_reports_broken_metadata ==="
+# 审查 M-5 第三处：生成的 apply 脚本原用 `python3 -c ... X-KDE-PluginKeyword`
+# 且 `[ -n "$id" ] || continue` —— 缺 id 字段时静默跳过，与 extract_pool
+# （吞异常）、do_inject（抛栈）三种结局不一致。必须报告并失败。
+setup
+printf '{"KPlugin":{"Name":"NoIdHere"}}' > "$PREFIX/effects/kwin6_effect_fire/metadata.json"
+run apply_config
+assert_exit_code_nonzero "缺 id 字段 → apply 退出码非 0（不静默跳过）"
+assert_stderr_contains "[apply-config] 警告" "诊断写 stderr"
+teardown
+
 echo "=== test_install_apply_config_subcommand_matches_script ==="
 setup
 kwriteconfig6 --file "$CFG" --group General --key Blacklist "kwin6_effect_doom"

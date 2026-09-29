@@ -61,8 +61,29 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+
+# ---------------------------------------------------------------- prefix 路径闸
+# --prefix 是"把写入重定向到临时目录"的测试隔离参数，不是任意路径开关：
+#   * 必须是绝对路径 —— 相对路径随调用方 cwd 漂移，行为不可预期；
+#   * realpath 后不得为 / —— 否则 EFFECTS_DIR=/effects、LIBEXEC_DIR=/libexec；
+#   * realpath 后不得为 $HOME —— uninstall.sh 的 rm -rf "$LIBEXEC_DIR" 会变成
+#     rm -rf "$HOME/libexec"，删掉用户自己的目录（审查 M-3）。
+# realpath -m：目标尚不存在也返回规范化结果（prefix 常是还没创建的目录）。
+validate_prefix() {
+  local raw="$1" real home_real
+  case "$raw" in
+    /*) ;;
+    *)  die "--prefix 必须是绝对路径: $raw" ;;
+  esac
+  real="$(realpath -m -- "$raw")"
+  home_real="$(realpath -m -- "$HOME")"
+  [ "$real" != "/" ] || die "--prefix 不得为根目录 /（会操作 /libexec 等系统路径）"
+  [ "$real" != "$home_real" ] || die "--prefix 不得为 \$HOME（会 rm -rf \$HOME/libexec 等真实目录）"
+}
+
 # ---------------------------------------------------------------- 路径解析
 if [ -n "$PREFIX" ]; then
+  validate_prefix "$PREFIX"
   EFFECTS_DIR="$PREFIX/effects"
   CONFIG_FILE="$PREFIX/burn-window-randomrc"
   KWINRC="$PREFIX/kwinrc"
@@ -89,23 +110,55 @@ check_deps() {
   fi
 }
 
+# ---------------------------------------------------------------- id 提取（唯一实现）
+# 三处复用同一段 python：extract_pool、do_inject、emit_apply_script 生成的
+# apply 脚本。此前三处各写一份且行为不一致 —— extract_pool 有 KPlugin.Id 回退
+# 但 try/except 吞异常、do_inject 无回退且异常直接抛栈、apply 脚本无回退，
+# 配合 `[ -n "$id" ] || continue` 把坏文件静默跳过，同一坏文件三种结局。
+# 契约：成功 stdout 打印 id 并退出 0；JSON 不可解析退出 3、缺 id 字段退出 4，
+#       诊断一律写 stderr —— 调用方必须 warn，绝不静默跳过。
+# 代码里不得出现单引号/$/反引号/反斜杠：它会被 emit_apply_script 的未加引号
+# heredoc 展开，并作为单引号字符串写进生成的 apply 脚本。
+EXTRACT_ID_CODE="$(cat <<'EXTRACT_PY'
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception as exc:
+    print("[extract] metadata.json 无法解析: " + path + " (" + str(exc) + ")", file=sys.stderr)
+    sys.exit(3)
+keyword = data.get("X-KDE-PluginKeyword") or ""
+kplugin = data.get("KPlugin")
+fallback = kplugin.get("Id") if isinstance(kplugin, dict) else ""
+ident = keyword or fallback
+if not ident:
+    print("[extract] 缺少 X-KDE-PluginKeyword / KPlugin.Id: " + path, file=sys.stderr)
+    sys.exit(4)
+print(ident)
+EXTRACT_PY
+)"
+
+extract_id() { python3 -c "$EXTRACT_ID_CODE" "$1"; }
+
 # ---------------------------------------------------------------- 池成员提取
 # 池成员始终从特效目录的 metadata.json 现场提取，不在本脚本里硬编码 19 个 ID。
+# 遍历目录而非 glob metadata.json —— 否则"目录缺 metadata.json"根本进不了循环，
+# 属于完全静默的漏检。
 extract_pool() {
-  local json id
+  local dir json id
   POOL_IDS=()
-  for json in "$EFFECTS_DIR"/*/metadata.json; do
-    [ -e "$json" ] || continue
-    id="$(python3 - "$json" <<'PY'
-import json, sys
-try:
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-except Exception:
-    sys.exit(0)
-print(data.get("X-KDE-PluginKeyword") or data.get("KPlugin", {}).get("Id") or "")
-PY
-)"
-    [ -n "$id" ] && POOL_IDS+=("$id")
+  for dir in "$EFFECTS_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    json="$dir/metadata.json"
+    if [ ! -f "$json" ]; then
+      warn "缺少 metadata.json，跳过特效目录: $dir"
+      continue
+    fi
+    if ! id="$(extract_id "$json")"; then
+      warn "无法提取 effect id，跳过: $json"
+      continue
+    fi
+    POOL_IDS+=("$id")
   done
   POOL_CSV="$(IFS=,; echo "${POOL_IDS[*]:-}")"
   [ "${#POOL_IDS[@]}" -gt 0 ]
@@ -135,11 +188,18 @@ do_build() {
 
 # ---------------------------------------------------------------- 注入
 do_inject() {
-  local json id count=0
-  for json in "$EFFECTS_DIR"/*/metadata.json; do
-    [ -e "$json" ] || continue
-    id="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("X-KDE-PluginKeyword") or "")' "$json")"
-    [ -n "$id" ] || continue
+  local dir json id count=0
+  for dir in "$EFFECTS_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    json="$dir/metadata.json"
+    if [ ! -f "$json" ]; then
+      warn "缺少 metadata.json，跳过特效目录: $dir"
+      continue
+    fi
+    if ! id="$(extract_id "$json")"; then
+      warn "无法提取 effect id，跳过: $json"
+      continue
+    fi
     python3 "$INJECT_PY" \
       --effect-dir "$(dirname "$json")" \
       --effect-id "$id" \
@@ -148,6 +208,11 @@ do_inject() {
     count=$((count + 1))
   done
   [ "$count" -gt 0 ] || die "没有可注入的特效（$EFFECTS_DIR 为空）"
+  # 池成员必须与注入数一致：池里有、却注入不到 → 抽签会选中未注入的特效，
+  # 当次开/关窗无动画（哑弹）。提取逻辑统一后两者取自同一份 id。
+  if [ "$count" -ne "${#POOL_IDS[@]}" ]; then
+    die "注入数($count) 与池成员数(${#POOL_IDS[@]}) 不一致：存在无法注入的特效"
+  fi
   log "已注入 $count 个特效"
 }
 
@@ -181,6 +246,11 @@ EFFECTS_DIR="\${BURN_WINDOW_EFFECTS:-\$HOME/.local/share/kwin/effects}"
 INJECT_PY="\${BURN_WINDOW_INJECT:-$inject_path}"
 
 die() { echo "[apply-config] 错误: \$*" >&2; exit 1; }
+warn() { echo "[apply-config] 警告: \$*" >&2; }
+
+# 与 install.sh 的 extract_pool/do_inject 同一份提取逻辑（heredoc 展开注入）
+EXTRACT_ID_CODE='$EXTRACT_ID_CODE'
+extract_id() { python3 -c "\$EXTRACT_ID_CODE" "\$1"; }
 
 [ -f "\$CONFIG_FILE" ] || die "配置文件不存在: \$CONFIG_FILE"
 [ -f "\$INJECT_PY" ] || die "注入器不存在: \$INJECT_PY"
@@ -190,10 +260,19 @@ POOL="\$(kreadconfig6 --file "\$CONFIG_FILE" --group General --key Pool || true)
 BLACKLIST="\$(kreadconfig6 --file "\$CONFIG_FILE" --group General --key Blacklist || true)"
 
 failed=0
-for json in "\$EFFECTS_DIR"/*/metadata.json; do
-  [ -e "\$json" ] || continue
-  id="\$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("X-KDE-PluginKeyword") or "")' "\$json")"
-  [ -n "\$id" ] || continue
+for dir in "\$EFFECTS_DIR"/*/; do
+  [ -d "\$dir" ] || continue
+  json="\$dir/metadata.json"
+  if [ ! -f "\$json" ]; then
+    warn "缺少 metadata.json，跳过特效目录: \$dir"
+    failed=1
+    continue
+  fi
+  if ! id="\$(extract_id "\$json")"; then
+    warn "无法提取 effect id，跳过: \$json"
+    failed=1
+    continue
+  fi
   if ! python3 "\$INJECT_PY" --effect-dir "\$(dirname "\$json")" --effect-id "\$id" \\
         --pool "\$POOL" --blacklist "\$BLACKLIST"; then
     echo "[apply-config] 注入失败: \$id" >&2
@@ -239,7 +318,16 @@ do_sudo_kcm() {
   fi
   [ -f "$KCM_SO" ] || die "KCM 产物不存在，需先构建 kcm/: $KCM_SO"
   log "安装 KCM 到系统路径（需提权）"
-  sudo install -D -m 0644 "$KCM_SO" "$KCM_DEST"
+  # 提权失败必须显式终止并说明后果：KCM 只是可选组件，前面的特效注入 / kwinrc /
+  # apply 脚本已经落盘，绝不能被 set -e 静默吞掉，也不能让用户误以为整体失败。
+  # 凭据通道与 uninstall.sh 保持一致：sudo 缓存优先，其次 SUDO_PASSWORD 环境变量。
+  if [ -n "${SUDO_PASSWORD:-}" ]; then
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' install -D -m 0644 "$KCM_SO" "$KCM_DEST" || \
+      die "KCM 安装失败；已保留的用户级安装（特效注入 / kwinrc / apply 脚本）仍可用，配置未写入"
+  else
+    sudo install -D -m 0644 "$KCM_SO" "$KCM_DEST" || \
+      die "KCM 安装失败；已保留的用户级安装（特效注入 / kwinrc / apply 脚本）仍可用，配置未写入"
+  fi
 }
 
 # ---------------------------------------------------------------- 配置（最后一步）

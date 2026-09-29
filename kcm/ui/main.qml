@@ -60,5 +60,8 @@ KCMUtils.SimpleKCM {
         // 不带源路径前缀，无法从日志中反推文件位置。
         console.log("BMW_KCM_QML_LOADED")
         console.log("BMW_KCM_QML_URL=" + Qt.resolvedUrl("main.qml"))
+        // 状态探针：证明 QML 侧确实读取 kcm.applyRunning（该属性此前在
+        // main.qml 中零命中，属死属性），值进 journal 供无 GUI 环境断言
+        console.log("BMW_KCM_APPLY_RUNNING=" + kcm.applyRunning)
     }
 }

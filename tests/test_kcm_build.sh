@@ -241,6 +241,10 @@ CFG
           timeout -k 5 30 kcmshell6 kcm_burnwindow
   assert_exit_code_zero "诊断模式正常退出（未挂起）"
   assert_contains "BMW_KCM_DIAG_APPLY_OUTPUT=" "诊断输出已写出"
+  # RF5「按钮状态恢复」（审查 M-6）：finishApply 是 applyRunning 的唯一收口，
+  # 走不到它就会让状态停在 running。用诊断输出代替 GUI 操作。
+  assert_contains "BMW_KCM_DIAG_APPLY_RUNNING=false" "apply 结束后 applyRunning 已归零（按钮状态恢复）"
+  assert_contains "BMW_KCM_DIAG_APPLY_NEEDSSAVE=false" "apply 结束后 needsSave 回到基线（框架按钮可用性的驱动量已复位）"
   # applyOutput 必须非空：/bin/false 退出码 1，KCM 应给出失败描述
   if printf '%s' "$OUTPUT" | grep -q "BMW_KCM_DIAG_APPLY_OUTPUT=.\{1,\}"; then
     pass "apply 失败信息非空（/bin/false 退出码 1 被上报）"

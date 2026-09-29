@@ -25,7 +25,9 @@ class BurnWindowKCM : public KQuickConfigModule
     Q_PROPERTY(QStringList blacklist READ blacklist NOTIFY blacklistChanged)
     // 最近一次 apply 的结果描述（成功为脚本输出，失败为失败原因）
     Q_PROPERTY(QString applyOutput READ applyOutput NOTIFY applyOutputChanged)
-    // apply 进行中 —— QML 用它禁用 Apply 按钮
+    // apply 进行中 —— 实际消费者：apply() 的幂等闸（重复点击不启动第二个
+    // 子进程）、main.qml 的状态探针、BMW_KCM_DIAG_APPLY_* 诊断输出。
+    // 注意：框架 Apply 按钮的可用性由基类 needsSave 驱动，不读本属性。
     Q_PROPERTY(bool applyRunning READ applyRunning NOTIFY applyRunningChanged)
 
 public:
