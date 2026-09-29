@@ -22,6 +22,14 @@ RC=0
 BUILD=""
 PREFIX=""
 CFG=""
+# ---- 保护测试开始前已存在的系统 KCM（M-2，与 test_kcm_build.sh 同一套约定）----
+KCM_BACKUP_DIR=""     # 进入测试时 KCM_DEST 的内容快照
+KCM_WAS_PRESENT=0     # 进入测试时目标是否已存在
+KCM_SNAPSHOT_DONE=0   # 快照是否已执行 —— 未快照时 restore 必须不动目标
+KCM_RESTORED=0        # 恢复动作只执行一次（显式路径与 trap 兜底共用）
+KCM_PRESET_CLEANED=0  # 占位清理只执行一次
+PRESET_FILE=""        # 用例 0 预置的占位 KCM（断言"原样保留"的比对源）
+KCM_INITIAL_PRESENT=0 # 预置动作之前的初始状态（断言"净影响为零"用）
 
 setup() {
   BUILD="$(mktemp -d /tmp/bmw-qml-build.XXXXXX)"
@@ -93,6 +101,61 @@ sudo_cmd() {
   fi
 }
 
+# ---------------------------------------------------- 系统 KCM 快照/还原（M-2）
+# 进入测试时快照 KCM_DEST，退出时原样还原 —— 只有"进入时不存在"（本次新装）
+# 才删除。旧版无条件 install + 无条件 rm，会让用户经 install.sh 正式安装的
+# KCM 在跑完测试后从系统设置里消失。
+snapshot_kcm() {
+  KCM_SNAPSHOT_DONE=1
+  [ "${KCM_WAS_PRESENT:-0}" -eq 1 ] && return 0
+  [ -e "$KCM_DEST" ] || return 0
+  KCM_BACKUP_DIR="$(mktemp -d /tmp/bmw-qml-snap.XXXXXX)"
+  if cp "$KCM_DEST" "$KCM_BACKUP_DIR/kcm_burnwindow.so" 2>/dev/null \
+     && [ -s "$KCM_BACKUP_DIR/kcm_burnwindow.so" ]; then
+    KCM_WAS_PRESENT=1
+  else
+    echo "  快照失败，退出时不删除 $KCM_DEST" >&2
+    rm -rf "$KCM_BACKUP_DIR"
+    KCM_BACKUP_DIR=""
+    KCM_WAS_PRESENT=1   # 文件在但拿不到内容：视为"已存在"，退出时保留
+  fi
+}
+
+restore_kcm() {
+  [ "${KCM_RESTORED:-0}" -eq 1 ] && return 0
+  # 从未快照 = 脚本极早期失败：无法区分用户安装与本次新装，一律不动
+  [ "${KCM_SNAPSHOT_DONE:-0}" -eq 1 ] || return 0
+  if ! sudo_available; then
+    echo "  sudo 凭证不可用，保留 $KCM_DEST（快照: ${KCM_WAS_PRESENT:-0}）"
+    return 0
+  fi
+  KCM_RESTORED=1
+  if [ "${KCM_WAS_PRESENT:-0}" -eq 0 ]; then
+    sudo_cmd rm -f "$KCM_DEST" && echo "  已删除 $KCM_DEST"
+  elif [ -f "$KCM_BACKUP_DIR/kcm_burnwindow.so" ]; then
+    if sudo_cmd install -D -m 0644 "$KCM_BACKUP_DIR/kcm_burnwindow.so" "$KCM_DEST"; then
+      echo "  已还原测试开始前的 KCM: $KCM_DEST"
+    else
+      echo "  还原失败: $KCM_DEST（备份仍在 $KCM_BACKUP_DIR）" >&2
+      KCM_RESTORED=0
+    fi
+  else
+    echo "  快照内容缺失，保留 $KCM_DEST 不动" >&2
+  fi
+}
+
+# 占位文件由本测试自己放置，最终必须清掉；初始就已存在时 PRESET_FILE 为空
+cleanup_preset() {
+  [ "${KCM_PRESET_CLEANED:-0}" -eq 1 ] && return 0
+  [ -n "${PRESET_FILE:-}" ] || return 0
+  KCM_PRESET_CLEANED=1
+  sudo_available || return 0
+  sudo_cmd rm -f "$KCM_DEST" >/dev/null 2>&1 || true
+}
+
+# 中途任何 exit（构建失败/提权失败/前置 install 失败）都要还原并清占位
+trap 'restore_kcm; cleanup_preset' EXIT
+
 # 启动一次 KCM 并收集本轮 journal；结果放 $OUTPUT（供 assert_contains 断言）。
 # $1 = 传给 KCM 的额外环境变量（如 Blacklist 已由外部写入配置，此处只传路径）。
 launch_and_collect() {
@@ -116,6 +179,32 @@ launch_and_collect() {
 # ---------------------------------------------------------------- 前置
 echo "=== 前置：构建并安装 KCM ==="
 setup
+
+# ============================================================ 0. 保护已装产物
+# 放在构建之前：构建失败走 exit 1 时快照必须已存在，否则 restore 会把
+# "从未快照"误判成"本次新装"并删掉用户正式安装的 KCM。
+echo "=== 前置：保护测试开始前已存在的系统 KCM ==="
+KCM_INITIAL_PRESENT=0
+[ -e "$KCM_DEST" ] && KCM_INITIAL_PRESENT=1
+if sudo_available; then
+  if [ "$KCM_INITIAL_PRESENT" -eq 1 ]; then
+    echo "  系统路径已有 KCM（视为用户正式安装），不预置，直接以其为保护对象"
+  else
+    PRESET_FILE="$BUILD/preset-kcm.so"
+    printf 'BMW_KCM_PRESET_STANDBY' > "$PRESET_FILE"
+    run sudo_cmd install -D -m 0644 "$PRESET_FILE" "$KCM_DEST"
+    if [ "$RC" -eq 0 ]; then
+      pass "已预置占位 KCM（模拟用户正式安装）"
+    else
+      fail "已预置占位 KCM（模拟用户正式安装）" "退出码 $RC"
+      PRESET_FILE=""
+    fi
+  fi
+else
+  skip "预置占位 KCM" "sudo 凭据不可用"
+fi
+# 必须在预置之后快照：快照内容就是"退出时必须还原成的样子"
+snapshot_kcm
 
 run cmake -S "$KCM_SRC" -B "$BUILD" -G Ninja
 if [ "$RC" -ne 0 ]; then
@@ -181,12 +270,36 @@ assert_eq "$ITEM_COUNT" "19" "渲染项数 == 19"
 
 # ---------------------------------------------------------------- 环境恢复
 echo
-echo "恢复环境：移除测试装入的系统 KCM"
-if sudo_available; then
-  sudo_cmd rm -f "$KCM_DEST" && echo "  已删除 $KCM_DEST"
+echo "恢复环境：还原/移除测试期间写入的系统 KCM"
+restore_kcm
+
+# ---- 断言：测试开始前已存在的 KCM 必须原样保留（M-2）----
+echo "=== test_preexisting_kcm_is_preserved ==="
+if [ -n "$PRESET_FILE" ]; then
+  if cmp -s "$PRESET_FILE" "$KCM_DEST" 2>/dev/null; then
+    pass "测试开始前已存在的 KCM 被原样保留（未被删除）"
+  else
+    RC=1
+    fail "测试开始前已存在的 KCM 被原样保留（未被删除）" \
+      "目标不存在或内容与预置不符（正式安装的 KCM 会这样丢失）"
+  fi
+elif [ "$KCM_WAS_PRESENT" -eq 1 ]; then
+  if cmp -s "$KCM_BACKUP_DIR/kcm_burnwindow.so" "$KCM_DEST" 2>/dev/null; then
+    pass "测试开始前已存在的 KCM 被原样保留（未被删除）"
+  else
+    RC=1
+    fail "测试开始前已存在的 KCM 被原样保留（未被删除）" "未还原备份"
+  fi
 else
-  echo "  sudo 凭据不可用，保留 $KCM_DEST"
+  skip "测试开始前已存在的 KCM 被原样保留" "测试开始时目标不存在，且未成功预置"
 fi
+
+# 清理占位文件，使系统状态回到测试开始前
+cleanup_preset
+NOW_PRESENT=0
+[ -e "$KCM_DEST" ] && NOW_PRESENT=1
+assert_eq "$NOW_PRESENT" "$KCM_INITIAL_PRESENT" "测试后系统 KCM 存在状态与测试前一致（净影响为零）"
+
 teardown
 
 echo

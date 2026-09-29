@@ -4,14 +4,13 @@
 # 主测对象是**独立 apply 脚本**（配置 ApplyScript= 指向它，Task 5 的 KCM 通过
 # QProcess 调用的正是它），install.sh --apply-config 作为手动入口另有等价性用例。
 #
-# 需要本机 KWin D-Bus 运行（用例 3 断言 19 个特效真实加载）；结束后统一卸载，
-# 恢复会话原状。
+# 需要本机 KWin D-Bus 运行（apply 脚本自身会 reload 特效）；本脚本本身
+# 不查询、不 unload 真实 KWin —— 隔离约定：只有 test_e2e.sh 允许操作真实环境。
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL="$ROOT/install.sh"
 REAL_EFFECTS="$HOME/.local/share/kwin/effects"
-KWIN_INTERFACE="org.kde.kwin.Effects"   # 实测：小写 kwin；org.kde.KWin 会报 No such interface
 
 PASS=0
 FAIL=0
@@ -96,10 +95,15 @@ assert_not_timed_out() {
   if [ "$RC" -ne 124 ]; then pass "$1"; else fail "$1" "超时（timeout 退出码 124）"; fi
 }
 
-loaded_bmw_count() {
-  qdbus6 org.kde.KWin /Effects "$KWIN_INTERFACE".loadedEffects 2>/dev/null \
-    | tr ',' '\n' | grep -c 'kwin6_effect_' || true
-}
+# ---------------------------------------------------------------- 隔离自检
+# 隔离约定：只有 test_e2e.sh 允许操作真实 KWin。本脚本不得出现真实 KWin 的
+# D-Bus 名字 —— 否则"prefix 隔离"只是名义上的，用例会读到真实环境状态。
+# 模式串用 printf 拼接，避免本行文本被 -F 自己命中。
+echo "=== test_apply_config_never_addresses_real_kwin ==="
+SELF="${BASH_SOURCE[0]}"
+REAL_KWIN_BUS="$(printf 'org.%s.%s' 'kde' 'KWin')"
+HITS="$(grep -F -c "$REAL_KWIN_BUS" "$SELF" || true)"
+assert_eq "${HITS:-0}" "0" "测试脚本自身不含真实 KWin D-Bus 名字（隔离约定）"
 
 echo "=== test_apply_rereads_blacklist_and_reinjects ==="
 setup
@@ -124,7 +128,11 @@ echo "=== test_apply_reloads_all_19_effects ==="
 setup
 run apply_config
 assert_exit_code_zero "apply 退出码 0"
-assert_eq "$(loaded_bmw_count)" "19" "19 个特效经 D-Bus 重载后处于加载状态"
+# 不查真实 KWin：改读 apply 自身的诊断输出 —— 每次 reload 失败都会打到 stderr，
+# 因此"零失败 + 报告完成"直接反映被测对象的行为，而非真实环境的既有状态
+assert_stderr_contains "[apply-config] 完成" "apply 报告完成（黑名单已生效）"
+RELOAD_FAIL="$(printf '%s\n' "$OUTPUT" | grep -c 'loadEffect 失败' || true)"
+assert_eq "${RELOAD_FAIL:-0}" "0" "19 个特效 reload 无失败（读 apply stderr）"
 teardown
 
 echo "=== test_apply_is_non_interactive ==="
@@ -156,15 +164,10 @@ assert_exit_code_zero "install.sh --apply-config 退出码 0"
 assert_file_contains "$MAIN" 'BMW_BLACKLIST = ["kwin6_effect_doom"]' "子命令与独立脚本行为一致"
 teardown
 
-# ---------------------------------------------------------------- 环境恢复
-echo
-echo "恢复环境：卸载本轮测试加载的特效"
-if command -v qdbus6 >/dev/null 2>&1; then
-  for id in $(qdbus6 org.kde.KWin /Effects "$KWIN_INTERFACE".loadedEffects 2>/dev/null | tr ',' '\n' | grep 'kwin6_effect_'); do
-    qdbus6 org.kde.KWin /Effects unloadEffect "$id" >/dev/null 2>&1 || true
-  done
-  echo "  剩余已加载 BMW 特效: $(loaded_bmw_count)"
-fi
+# 不做"卸载真实特效"的收尾：本轮只在 prefix 内改写文件，对真实 KWin 的
+# 影响仅来自 apply 脚本自身的 unload+load（reload 后仍是加载态）。
+# 旧版逐个 unloadEffect 会让真实会话的 19 个特效在测试后全部消失，
+# 并直接把后续 test_e2e.sh 的前置检查（loaded == 19）打成 FAIL。
 
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL"
