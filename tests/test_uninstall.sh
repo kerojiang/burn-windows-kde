@@ -168,6 +168,20 @@ assert_eq "$LEFT_INJECT" "0" "无残留注入代码"
 
 assert_eq "$(ls "$EFFECTS"/*/contents/code/main.js.orig 2>/dev/null | wc -l | tr -d ' ')" "0" ".orig 备份已全部删除"
 
+# 特效目录本身是 install.sh 经 tar 解包的产物（install.sh:133，含
+# metadata.json / shader / locale 数千文件），必须随卸载整体删除 ——
+# 只还原 main.js 不删目录时，"不留任何记录"不成立
+DIRS_LEFT=""
+for id in $POOL_IDS; do
+  [ -n "$id" ] || continue
+  [ -d "$EFFECTS/$id" ] && DIRS_LEFT="$DIRS_LEFT $id"
+done
+if [ -z "$DIRS_LEFT" ]; then
+  pass "池成员特效目录已全部删除（不留任何记录）"
+else
+  fail "池成员特效目录已全部删除（不留任何记录）" "残留:$DIRS_LEFT"
+fi
+
 assert_exists "$CFG" "配置文件已删除"
 assert_exists "$PREFIX/burn-window-apply-config.sh" "apply 脚本已删除"
 assert_exists "$PREFIX/libexec" "libexec 目录已删除（inject.py + arbiter.js）"
@@ -192,8 +206,10 @@ echo "=== test_uninstall_restores_main_js_bit_exact ==="
 MISMATCH=""
 for orig in "$TMPDIR_TEST"/orig_*.js; do
   [ -e "$orig" ] || continue
-  id="$(basename "$orig" .orig 2>/dev/null)"
   id="$(basename "$orig")"; id="${id#orig_}"; id="${id%.js}"
+  # 目录已随卸载整体删除 = 无残留风险，无需逐字节比对；
+  # 目录仍在（删除失败/未实现）时才要求 main.js 存在且逐字节一致
+  [ -d "$EFFECTS/$id" ] || continue
   cur="$EFFECTS/$id/contents/code/main.js"
   if [ ! -e "$cur" ]; then
     MISMATCH="$MISMATCH $id(缺失)"

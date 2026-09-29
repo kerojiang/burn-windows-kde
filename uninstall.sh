@@ -11,6 +11,7 @@
 #   7. apply 脚本 burn-window-apply-config.sh
 #   8. 注入器副本目录（libexec）
 #   9. 系统 KCM 产物 kcm_burnwindow.so
+#  10. 特效目录本身（tar 解包产物：metadata.json / shader / locale）
 #
 # 用法：
 #   ./uninstall.sh                  卸载真实安装
@@ -31,7 +32,7 @@ log()  { echo "[uninstall] $*"; }
 warn() { echo "[uninstall] 警告: $*" >&2; }
 die()  { echo "[uninstall] 错误: $*" >&2; exit 1; }
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ---------------------------------------------------------------- 参数解析
 while [ $# -gt 0 ]; do
@@ -138,6 +139,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   log "  6. 删除 apply 脚本: $APPLY_SCRIPT"
   log "  7. 删除注入器目录: $LIBEXEC_DIR"
   log "  8. 删除 KCM: $KCM_DEST"
+  log "  9. 删除 ${#POOL_IDS[@]} 个特效目录（tar 解包产物）"
   exit 0
 fi
 
@@ -238,6 +240,30 @@ if [ -e "$KCM_DEST" ]; then
     warn "可先执行 sudo -v，或以 SUDO_PASSWORD=<密码> 方式重跑"
     KCM_STATE=1
   fi
+fi
+
+# ---------------------------------------------------------------- 9. 特效目录
+# 必须排在 unload(1) 与 kwinrc Enabled 移除(3) 之后：此时 KWin 已不再引用
+# 这些目录，删除不会留下"注册项指向不存在目录"的悬空状态。
+# id 校验是 rm -rf 的安全闸 —— POOL_IDS 可来自配置文件（可被外部写入），
+# 含路径分隔符、点目录、或以 - 开头的成员一律拒绝
+dirs_removed=0
+skipped_ids=""
+for id in "${POOL_IDS[@]}"; do
+  [ -n "$id" ] || continue
+  case "$id" in
+    */*|.|..|-* ) skipped_ids="$skipped_ids $id"; continue ;;
+  esac
+  if [ -d "$EFFECTS_DIR/$id" ]; then
+    rm -rf "$EFFECTS_DIR/$id"
+    dirs_removed=$((dirs_removed + 1))
+  fi
+done
+if [ "$dirs_removed" -gt 0 ]; then
+  log "已删除 $dirs_removed 个特效目录"
+fi
+if [ -n "$skipped_ids" ]; then
+  warn "跳过非法特效 id:$skipped_ids"
 fi
 
 # ---------------------------------------------------------------- 结果
