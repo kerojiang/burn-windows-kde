@@ -43,12 +43,14 @@ setup() {
   for d in "$REAL_EFFECTS"/*/; do
     [ -e "$d" ] || continue
     id="$(basename "$d")"
-    mkdir -p "$PREFIX/effects/$id/contents/code"
+    mkdir -p "$PREFIX/effects/$id/contents/code" "$PREFIX/effects/$id/contents/config"
     cp "$d/metadata.json" "$PREFIX/effects/$id/" 2>/dev/null || true
     # fixture 必须是上游纯净态（真实环境 e2e 首装后已注入，inject.py 会 exit 2）
     src="$d/contents/code/main.js.orig"
     [ -e "$src" ] || src="$d/contents/code/main.js"
     cp "$src" "$PREFIX/effects/$id/contents/code/main.js" 2>/dev/null || true
+    # 参数模型（Task 7）：main.xml 是 params 自渲染的数据源，缺失则参数面板为空
+    cp "$d/contents/config/main.xml" "$PREFIX/effects/$id/contents/config/" 2>/dev/null || true
   done
 }
 
@@ -161,7 +163,10 @@ trap 'restore_kcm; cleanup_preset' EXIT
 launch_and_collect() {
   local t0
   t0="$(date +%s)"
+  # BMW_KCM_KWINRC 指向 prefix 空文件：参数值全部回落 main.xml default，
+  # 断言不被用户真实 kwinrc 的现值干扰（Task 6 引入的读侧隔离）
   env BURN_WINDOW_CONFIG="$CFG" BURN_WINDOW_EFFECTS="$PREFIX/effects" \
+    BMW_KCM_KWINRC="$PREFIX/kwinrc" \
     timeout -k 5 20 kcmshell6 kcm_burnwindow >/dev/null 2>&1 &
   local pid=$!
   sleep 4                      # 等 QML 加载并把探针刷进 journal
@@ -257,12 +262,15 @@ assert_contains "BMW_KCM_QML_URL=qrc:/kcm/kcm_burnwindow/main.qml" "QRC 路径�
 # 但 main.qml 中 grep applyRunning 零命中）。断言 QML 真的读取了它。
 assert_contains "BMW_KCM_APPLY_RUNNING=false" "QML 读取 kcm.applyRunning（初始为 false）"
 
-# ================================================================ 2. checked 反映黑名单
-echo "=== test_checkbox_checked_reflects_blacklist ==="
+# ================================================================ 2. checked 反映参与语义（D3）
+echo "=== test_checkbox_checked_reflects_participating ==="
 kwriteconfig6 --file "$CFG" --group General --key Blacklist "kwin6_effect_fire"
 launch_and_collect
-assert_contains "BMW_KCM_ITEM kwin6_effect_fire checked=true" "黑名单中的 fire → checked=true"
-assert_contains "BMW_KCM_ITEM kwin6_effect_doom checked=false" "未入黑名单的 doom → checked=false"
+# 反转后的语义：checked = participating = 不在黑名单
+assert_contains "BMW_KCM_ITEM kwin6_effect_fire checked=false" "黑名单中的 fire → 不参与 → checked=false"
+assert_contains "BMW_KCM_ITEM kwin6_effect_doom checked=true" "未入黑名单的 doom → 参与 → checked=true"
+assert_contains "BMW_KCM_PARTICIPATING kwin6_effect_fire=false" "PARTICIPATING 探针：fire 反转映射为 false"
+assert_contains "BMW_KCM_PARTICIPATING kwin6_effect_doom=true" "PARTICIPATING 探针：doom 反转映射为 true"
 
 # ================================================================ 3. 19 项全部渲染
 echo "=== test_all_19_items_rendered ==="
@@ -270,6 +278,37 @@ POOL_COUNT="$(kreadconfig6 --file "$CFG" --group General --key Pool | tr ',' '\n
 ITEM_COUNT="$(printf '%s' "$OUTPUT" | grep -c 'BMW_KCM_ITEM ')"
 assert_eq "$ITEM_COUNT" "$POOL_COUNT" "渲染项数 == Pool 长度 ($POOL_COUNT)"
 assert_eq "$ITEM_COUNT" "19" "渲染项数 == 19"
+
+# ================================================================ 4. 默认全参与 + 开关只读徽标
+echo "=== test_participating_default_all_checked ==="
+kwriteconfig6 --file "$CFG" --group General --key Blacklist ""
+launch_and_collect
+TRUE_N="$(printf '%s' "$OUTPUT" | grep -cE 'BMW_KCM_PARTICIPATING [a-z0-9_]+=true')"
+FALSE_N="$(printf '%s' "$OUTPUT" | grep -cE 'BMW_KCM_PARTICIPATING [a-z0-9_]+=false')"
+assert_eq "$TRUE_N" "19" "黑名单为空 → 19 个成员全部 participating=true（勾上=参与）"
+assert_eq "$FALSE_N" "0" "无 participating=false 的成员"
+
+echo "=== test_switch_badge_rendered ==="
+if printf '%s' "$OUTPUT" | grep -qE 'BMW_KCM_SWITCH_BADGE=(已启用|未启用)'; then
+  pass "开关徽标只读探针存在（值域 已启用|未启用）"
+else
+  fail "开关徽标只读探针存在（值域 已启用|未启用）" "未找到 BMW_KCM_SWITCH_BADGE 行"
+fi
+# D6：页面不得出现任何 toggle 开关 —— 静态断言（不依赖 journal）
+if grep -qE 'setRandomLoaded|toggleLoaded|QQC2\.Switch[ {]' "$KCM_SRC/ui/main.qml"; then
+  fail "页面无 toggle 开关（D6 只读徽标）" "main.qml 出现开关类调用/控件"
+else
+  pass "页面无 toggle 开关（D6 只读徽标）"
+fi
+
+# ================================================================ 5. 参数面板渲染与初始值
+echo "=== test_param_widgets_rendered ==="
+assert_contains "BMW_KCM_PARAM_WIDGET kwin6_effect_fire Duration UInt" "fire Duration 的 UInt 控件已渲染"
+assert_contains "BMW_KCM_PARAM_WIDGET kwin6_effect_glitch Strength Double" "glitch Strength 的 Double 控件已渲染"
+
+echo "=== test_param_control_wiring ==="
+# 隔离 kwinrc 为空（launch_and_collect 用 prefix 空文件）→ 初始值必须回落 default
+assert_contains "BMW_KCM_PARAM_EDIT kwin6_effect_fire Duration=1500" "fire Duration 初始值 = main.xml default 1500"
 
 # ---------------------------------------------------------------- 环境恢复
 echo
