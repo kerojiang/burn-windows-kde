@@ -212,21 +212,23 @@ APPLY_EOF
 }
 
 do_apply_script() {
-  # 注入器副本随 apply 脚本一起落盘，否则源码目录移动后 apply 无法工作
-  local inject_dst
+  # 注入器必须与它的依赖 arbiter.js 成对落盘（inject.py 以自身所在目录定位
+  # arbiter.js），否则源码目录移动后 apply 会因找不到 arbiter 而崩溃。
+  local dst_dir
   if [ -n "$PREFIX" ]; then
-    inject_dst="$PREFIX/burn-window-inject.py"
+    dst_dir="$PREFIX/libexec"
   else
-    inject_dst="$HOME/.local/libexec/burn-window-inject.py"
+    dst_dir="$HOME/.local/libexec/burn-window"
   fi
-  mkdir -p "$(dirname "$inject_dst")"
-  cp "$INJECT_PY" "$inject_dst"
-  chmod +x "$inject_dst"
+  mkdir -p "$dst_dir"
+  cp "$ROOT/lib/inject.py" "$dst_dir/inject.py"
+  cp "$ROOT/lib/arbiter.js" "$dst_dir/arbiter.js"
+  chmod +x "$dst_dir/inject.py"
 
-  emit_apply_script "$inject_dst" > "$APPLY_SCRIPT"
+  emit_apply_script "$dst_dir/inject.py" > "$APPLY_SCRIPT"
   chmod +x "$APPLY_SCRIPT"
   log "已生成 apply 脚本: $APPLY_SCRIPT"
-  log "已生成注入器副本: $inject_dst"
+  log "已生成注入器副本: $dst_dir/{inject.py,arbiter.js}"
 }
 
 # ---------------------------------------------------------------- KCM（唯一提权步骤）
@@ -270,8 +272,45 @@ print_plan() {
   echo "  7. 写配置: $CONFIG_FILE"
 }
 
+# ---------------------------------------------------------------- 配置应用
+# 与 ApplyScript= 指向的独立脚本执行同一份逻辑（emit_apply_script 生成），
+# 避免"子命令"与"KCM 调用的脚本"两处实现漂移。
+do_apply_config() {
+  # kreadconfig6 对不存在的键返回空字符串且退出码 0，无法区分"键缺失"与
+  # "值为空" —— 因此文件存在性必须单独校验，不能依赖读取结果。
+  [ -f "$CONFIG_FILE" ] || die "配置文件不存在: $CONFIG_FILE"
+
+  # 注意：临时脚本路径用全局变量承载 —— 若在函数内用 local + trap EXIT，
+  # 函数返回后 trap 触发时该 local 已失效，set -u 会报"未绑定的变量"。
+  APPLY_TMP_SCRIPT="$(mktemp)"
+  emit_apply_script "$INJECT_PY" > "$APPLY_TMP_SCRIPT"
+  chmod +x "$APPLY_TMP_SCRIPT"
+
+  local rc
+  set +e
+  BURN_WINDOW_CONFIG="$CONFIG_FILE" \
+  BURN_WINDOW_EFFECTS="$EFFECTS_DIR" \
+  BURN_WINDOW_INJECT="$INJECT_PY" \
+    bash "$APPLY_TMP_SCRIPT"
+  rc=$?
+  set -e
+  rm -f "$APPLY_TMP_SCRIPT"
+  return "$rc"
+}
+
 # ---------------------------------------------------------------- 主流程
 main() {
+  # 子命令分发（独立 apply 逻辑见 emit_apply_script，两处必须保持等价）
+  if [ "$APPLY_CONFIG" -eq 1 ]; then
+    check_deps
+    do_apply_config
+    exit $?
+  fi
+  if [ "$EMIT_APPLY" -eq 1 ]; then
+    emit_apply_script "$INJECT_PY"
+    exit 0
+  fi
+
   check_deps
 
   if [ "$DRY_RUN" -eq 1 ]; then
