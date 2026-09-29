@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Name": "Burn Window",
+        "Description": "Configure random window open/close effects blacklist",
+        "Icon": "preferences-system-windows-effect",
+        "FormFactors": ["desktop"]
+    },
+    "X-KDE-System-Settings-Parent-Category": "windowmanagement",
+    "X-KDE-Weight": 30
+}

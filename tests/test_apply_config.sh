@@ -56,7 +56,9 @@ run() {
   set +e
   OUTPUT="$("$@" 2>&1)"
   RC=$?
-  set -e
+  # 恢复脚本原状态（原为 set -u，无 errexit）。误写成 set -e 会让 run 之后
+  # 任何返回非 0 的裸命令直接静默退出脚本。
+  set +e
 }
 
 fail() {
