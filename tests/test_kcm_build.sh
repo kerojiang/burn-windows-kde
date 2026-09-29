@@ -253,6 +253,112 @@ CFG
   fi
 fi
 
+# ============================================================ 4. 聚合模型诊断（Task 6）
+# DIAG 模式 BMW_KCM_DIAG_POOL：构造后输出 pool 模型 JSON / randomLoaded，
+# 演示 toggle 反转映射与 setParam 脏区，随后退出（纯内存演示，不 save 落盘）。
+diag_guard() {
+  # 返回 0 = 可以跑诊断；否则打印 skip 原因并返回 1
+  if [ ! -f "$KCM_DEST" ] || ! grep -qa "kcm_burnwindow" "$KCM_DEST" 2>/dev/null; then
+    skip "$1" "KCM 非本次构建产物（前置用例失败/SKIP）"
+    return 1
+  fi
+  if ! command -v kcmshell6 >/dev/null 2>&1; then
+    skip "$1" "kcmshell6 不可用"
+    return 1
+  fi
+  return 0
+}
+
+echo "=== test_pool_model_participating_and_params ==="
+if diag_guard "pool 模型诊断"; then
+  cat > "$PREFIX/diag-randomrc" <<CFG
+[General]
+Pool=kwin6_effect_fire,kwin6_effect_glitch
+Blacklist=
+ApplyScript=/bin/false
+CFG
+  run env BURN_WINDOW_CONFIG="$PREFIX/diag-randomrc" \
+          BMW_KCM_DIAG_POOL=1 \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "pool 诊断正常退出（未挂起/未崩溃）"
+  assert_contains "BMW_KCM_POOL_MODEL=" "POOL_MODEL 诊断已输出"
+  MODEL="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_POOL_MODEL=//p' | head -1)"
+  if printf '%s' "$MODEL" | python3 -c '
+import json, sys
+pool = json.load(sys.stdin)
+assert len(pool) == 2, f"pool 长度 {len(pool)}"
+fire = next(p for p in pool if p["effectId"] == "kwin6_effect_fire")
+assert fire["participating"] is True, "黑名单为空时默认全参与（D3）"
+names = {p["name"]: p for p in fire["params"]}
+assert "Duration" in names, f"fire params {list(names)}"
+assert names["Duration"]["type"] == "UInt"
+assert names["Duration"]["default"] == "1500"
+glitch = next(p for p in pool if p["effectId"] == "kwin6_effect_glitch")
+gnames = {p["name"] for p in glitch["params"]}
+assert "Strength" in gnames, f"glitch params {sorted(gnames)}"
+' 2>/dev/null; then
+    pass "pool 模型含 participating + params（fire Duration UInt/1500、glitch Strength）"
+  else
+    fail "pool 模型含 participating + params" "JSON 结构不符: ${MODEL:0:200}"
+  fi
+  assert_contains "BMW_KCM_RANDOM_LOADED=" "randomLoaded 诊断已输出"
+  if printf '%s' "$OUTPUT" | grep -qE 'BMW_KCM_RANDOM_LOADED=(true|false)$'; then
+    pass "randomLoaded 值域为 true|false"
+  else
+    fail "randomLoaded 值域为 true|false" "输出行值域外"
+  fi
+fi
+
+echo "=== test_toggle_participating_maps_to_blacklist ==="
+if diag_guard "参与语义映射诊断"; then
+  # 复用上一段的 OUTPUT（同一次 run 已含 toggle 演示探针）
+  TOG="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_DIAG_BLACKLIST_TOGGLED=//p' | head -1)"
+  assert_eq "$TOG" "kwin6_effect_fire" "participating=false → 加入黑名单（D3 反转映射）"
+  # RESTORED 的期望值恰为空串：必须先证明该行存在，否则"提取不到"与
+  # "提取到空值"不可区分，断言会假通过
+  assert_contains "BMW_KCM_DIAG_BLACKLIST_RESTORED=" "RESTORED 探针行存在"
+  RES="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_DIAG_BLACKLIST_RESTORED=//p' | head -1)"
+  assert_eq "$RES" "" "participating=true → 移出黑名单（恢复为空）"
+fi
+
+echo "=== test_set_param_marks_needs_save ==="
+if diag_guard "setParam 脏区诊断"; then
+  # 同一次 run：setParam 在 toggle 演示之后执行，脏区条数独立于 needsSave 归因
+  assert_contains "BMW_KCM_PARAMS_DIRTY=1" "setParam 后参数脏区计数为 1"
+fi
+
+echo "=== test_broken_main_xml_skipped_not_fatal ==="
+if diag_guard "坏 main.xml 容错诊断"; then
+  BADFX="$PREFIX/fx-effects"
+  mkdir -p "$BADFX/kwin6_effect_fire/contents/config" "$BADFX/kwin6_effect_glitch/contents/config"
+  cp "$HOME/.local/share/kwin/effects/kwin6_effect_fire/metadata.json" "$BADFX/kwin6_effect_fire/" 2>/dev/null || \
+    cp "$HOME/.local/share/kwin/effects/kwin6_effect_fire/metadata.json.orig" "$BADFX/kwin6_effect_fire/metadata.json"
+  cp "$HOME/.local/share/kwin/effects/kwin6_effect_fire/contents/config/main.xml" "$BADFX/kwin6_effect_fire/contents/config/"
+  cp "$HOME/.local/share/kwin/effects/kwin6_effect_glitch/metadata.json" "$BADFX/kwin6_effect_glitch/" 2>/dev/null || true
+  # 截断的 XML（未闭合标签）：解析必须报错并返回空参数表，不得崩溃
+  printf '<kcfg><group name=""><entry name="Strength" type="Double"><default>2</default>' \
+    > "$BADFX/kwin6_effect_glitch/contents/config/main.xml"
+  run env BURN_WINDOW_CONFIG="$PREFIX/diag-randomrc" \
+          BURN_WINDOW_EFFECTS="$BADFX" \
+          BMW_KCM_DIAG_POOL=1 \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "坏 main.xml 不导致崩溃（诊断仍正常退出）"
+  BADMODEL="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_POOL_MODEL=//p' | head -1)"
+  if printf '%s' "$BADMODEL" | python3 -c '
+import json, sys
+pool = json.load(sys.stdin)
+glitch = next(p for p in pool if p["effectId"] == "kwin6_effect_glitch")
+assert glitch["params"] == [], f"坏 XML 应给出空参数表, 实际 {glitch['params']}"
+fire = next(p for p in pool if p["effectId"] == "kwin6_effect_fire")
+assert len(fire["params"]) > 0, "同一模型中正常成员不受坏成员影响"
+' 2>/dev/null; then
+    pass "坏 XML 成员 params 为空、正常成员不受影响"
+  else
+    fail "坏 XML 成员 params 为空、正常成员不受影响" "结构不符: ${BADMODEL:0:200}"
+  fi
+  assert_contains "main.xml" "stderr 含 main.xml 解析警告（失败不静默）"
+fi
+
 # ============================================================ 环境恢复
 echo
 echo "恢复环境：还原/移除测试期间写入的系统 KCM"

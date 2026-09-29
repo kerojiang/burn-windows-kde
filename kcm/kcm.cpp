@@ -7,11 +7,13 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocale>
 #include <QProcess>
 #include <QTimer>
+#include <QXmlStreamReader>
 
 #include <cstdio>
 
@@ -45,6 +47,36 @@ BurnWindowKCM::BurnWindowKCM(QObject *parent, const KPluginMetaData &metaData)
             QCoreApplication::exit(0);
         });
     }
+
+    // 聚合模型诊断开关（Task 6）：输出 pool 模型 JSON / randomLoaded，
+    // 演示 toggleParticipating 反转映射与 setParam 脏区后退出。
+    // 演示只改内存态、不 save() 落盘，进程退出即丢弃，无副作用。
+    if (qEnvironmentVariableIsSet("BMW_KCM_DIAG_POOL")) {
+        QTimer::singleShot(0, this, [this]() {
+            // 1) pool 模型：含 participating 与 params（main.xml 自渲染数据源）
+            const QJsonDocument doc(QJsonArray::fromVariantList(m_pool));
+            std::fprintf(stderr, "BMW_KCM_POOL_MODEL=%s\n", doc.toJson(QJsonDocument::Compact).constData());
+            // 2) 开关只读状态（KWin loadedEffects 是否含占位特效）
+            std::fprintf(stderr, "BMW_KCM_RANDOM_LOADED=%s\n", m_randomLoaded ? "true" : "false");
+            // 3) 参与语义反转映射演示：先关一个成员（入黑名单），再开（出黑名单）
+            if (!m_pool.isEmpty()) {
+                const QString firstId = m_pool.first().toMap().value(QStringLiteral("effectId")).toString();
+                toggleParticipating(firstId, false);
+                std::fprintf(stderr, "BMW_KCM_DIAG_BLACKLIST_TOGGLED=%s\n", qPrintable(m_blacklist.join(QLatin1Char(','))));
+                toggleParticipating(firstId, true);
+                std::fprintf(stderr, "BMW_KCM_DIAG_BLACKLIST_RESTORED=%s\n", qPrintable(m_blacklist.join(QLatin1Char(','))));
+            }
+            // 4) 参数脏区：setParam upsert 后计数为 1（计数而非 needsSave，
+            //    因为上面的 toggle 已经置过 needsSave，归因会被污染）
+            if (!m_pool.isEmpty()) {
+                const QString firstId = m_pool.first().toMap().value(QStringLiteral("effectId")).toString();
+                setParam(firstId, QStringLiteral("Duration"), QStringLiteral("4242"));
+            }
+            std::fprintf(stderr, "BMW_KCM_PARAMS_DIRTY=%d\n", m_paramDirty.size());
+            std::fflush(stderr);
+            QCoreApplication::exit(0);
+        });
+    }
 }
 
 // 配置路径与特效目录都遵循 apply 脚本同一套环境变量约定，
@@ -67,16 +99,41 @@ void BurnWindowKCM::loadConfig()
     const QString blacklistCsv = group.readEntry("Blacklist", QString());
     m_applyScript = group.readEntry("ApplyScript", QString());
 
+    // 先解析黑名单：pool 循环里的 participating 依赖它（D3 反转映射）
+    m_blacklist = blacklistCsv.split(QLatin1Char(','), Qt::SkipEmptyParts);
+
     m_pool.clear();
     const QStringList poolIds = poolCsv.split(QLatin1Char(','), Qt::SkipEmptyParts);
     for (const QString &effectId : poolIds) {
         QVariantMap item;
         item.insert(QStringLiteral("effectId"), effectId);
         item.insert(QStringLiteral("displayName"), effectDisplayName(effectId));
+        // D3 参与语义：未在黑名单 = 参与。反转映射在 C++ 侧完成，
+        // QML 勾选框只读写 participating，不直接操心黑名单方向。
+        item.insert(QStringLiteral("participating"), !m_blacklist.contains(effectId));
+        // D7 参数自渲染：数据源是特效自身 main.xml 的 entry 定义 + kwinrc 当前值
+        item.insert(QStringLiteral("params"), parseMainXml(effectId));
         m_pool.append(item);
     }
 
-    m_blacklist = blacklistCsv.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    // 开关只读状态（D4/D6，唯一真相源是 KWin）：qdbus6 查 loadedEffects
+    // 是否含占位特效。查询只执行一次（loadConfig 会被基类重复调用）。
+    // 查询失败（KWin 未运行/qdbus6 缺失）→ false：特效没加载即开关关，语义正确。
+    if (!m_randomLoadedQueryDone) {
+        m_randomLoadedQueryDone = true;
+        QProcess qdbus;
+        qdbus.start(QStringLiteral("qdbus6"),
+                    {QStringLiteral("org.kde.KWin"), QStringLiteral("/Effects"),
+                     QStringLiteral("org.kde.kwin.Effects.loadedEffects")});
+        if (qdbus.waitForFinished(3000) && qdbus.exitCode() == 0) {
+            const QStringList loaded = QString::fromUtf8(qdbus.readAllStandardOutput())
+                                           .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            // 占位 ID 与 lib/inject.py 的 PLACEHOLDER_ID、install.sh 的占位目录名保持一致
+            m_randomLoaded = loaded.contains(QStringLiteral("kwin6_effect_bmw_random"));
+        } else {
+            m_randomLoaded = false;
+        }
+    }
 }
 
 // 显示名取自特效自身的 metadata.json：KConfig 里只存 ID，不重复保存显示名，
@@ -100,6 +157,99 @@ QString BurnWindowKCM::effectDisplayName(const QString &effectId) const
         name = kplugin.value(QStringLiteral("Name")).toString();
     }
     return name.isEmpty() ? effectId : name;
+}
+
+// D7 参数模型：解析特效 contents/config/main.xml（KConfigXT 格式，
+// 结构为 <entry name="X" type="UInt"><default>1500</default></entry>）。
+// 无文件 → 空表（无参数特效属正常）；XML 病态 → stderr 警告 + 空表，
+// 不崩溃、不影响同池其他成员的解析。
+QVariantList BurnWindowKCM::parseMainXml(const QString &effectId) const
+{
+    QVariantList params;
+    QFile file(m_effectsDir + QLatin1Char('/') + effectId + QStringLiteral("/contents/config/main.xml"));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return params;
+    }
+
+    QXmlStreamReader xml(&file);
+    QString curName, curType, curDefault;
+    bool inEntry = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            if (xml.name() == QLatin1String("entry")) {
+                inEntry = true;
+                const auto attrs = xml.attributes();
+                curName = attrs.value(QLatin1String("name")).toString();
+                curType = attrs.value(QLatin1String("type")).toString();
+                curDefault.clear();
+            } else if (inEntry && xml.name() == QLatin1String("default")) {
+                curDefault = xml.readElementText();
+            }
+        } else if (xml.isEndElement() && xml.name() == QLatin1String("entry")) {
+            inEntry = false;
+            if (!curName.isEmpty()) {
+                QVariantMap p;
+                p.insert(QStringLiteral("name"), curName);
+                p.insert(QStringLiteral("type"), curType);
+                p.insert(QStringLiteral("default"), curDefault);
+                p.insert(QStringLiteral("value"), currentParamValue(effectId, curName, curDefault));
+                params.append(p);
+            }
+        }
+    }
+    if (xml.hasError()) {
+        std::fprintf(stderr, "[kcm] main.xml 解析失败(%s): %s\n",
+                     qPrintable(effectId), qPrintable(xml.errorString()));
+        return QVariantList();
+    }
+    return params;
+}
+
+// kwinrc 路径：BMW_KCM_KWINRC 覆盖（测试隔离），默认用户 kwinrc。
+QString BurnWindowKCM::kwinrcPath() const
+{
+    const QString override = qEnvironmentVariable("BMW_KCM_KWINRC");
+    if (!override.isEmpty()) {
+        return override;
+    }
+    return QDir::homePath() + QStringLiteral("/.config/kwinrc");
+}
+
+// 参数当前值：kwinrc 的 [Effect-<id>] 组按名读取，缺失回落 main.xml 默认值。
+QString BurnWindowKCM::currentParamValue(const QString &effectId, const QString &name, const QString &defaultValue) const
+{
+    KConfig cfg(kwinrcPath(), KConfig::SimpleConfig);
+    KConfigGroup group(&cfg, QStringLiteral("Effect-") + effectId);
+    return group.readEntry(name, defaultValue);
+}
+
+// D3 参与语义入口：参与 = 不在黑名单，反转映射在这里完成。
+void BurnWindowKCM::toggleParticipating(const QString &effectId, bool participating)
+{
+    toggleBlacklist(effectId, !participating);
+}
+
+// D7 参数编辑：只进脏区（同名参数 upsert，后写覆盖先写），
+// 落盘 kwinrc 与重新加载特效统一在 apply() 完成。
+void BurnWindowKCM::setParam(const QString &effectId, const QString &name, const QString &value)
+{
+    for (int i = 0; i < m_paramDirty.size(); ++i) {
+        QVariantMap entry = m_paramDirty[i].toMap();
+        if (entry.value(QStringLiteral("effectId")) == effectId
+            && entry.value(QStringLiteral("name")) == name) {
+            entry.insert(QStringLiteral("value"), value);
+            m_paramDirty[i] = entry;
+            setNeedsSave(true);
+            return;
+        }
+    }
+    QVariantMap entry;
+    entry.insert(QStringLiteral("effectId"), effectId);
+    entry.insert(QStringLiteral("name"), name);
+    entry.insert(QStringLiteral("value"), value);
+    m_paramDirty.append(entry);
+    setNeedsSave(true);
 }
 
 void BurnWindowKCM::toggleBlacklist(const QString &effectId, bool add)
