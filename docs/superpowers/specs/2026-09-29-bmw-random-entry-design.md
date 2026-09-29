@@ -12,7 +12,7 @@
 
 把「19 个 BMW 特效挤在 KDE 动效下拉里单选、误选一个即破坏随机」的现状，改造为：
 
-1. 系统设置 → 外观 → 动效的「窗口打开/关闭」下拉里**只显示一个「随机特效」条目**；
+1. 系统设置 → 外观 → 动效的「窗口打开/关闭」下拉里**只显示一个条目「随机特效 [Burn-My-Windows]」**；
 2. 该条目行尾的**齿轮按钮**打开**聚合配置页**，页内可对 19 个特效逐项勾选与调参；
 3. **下拉就是唯一总开关**，遵循 KDE 原生交互（选中 + 点应用才生效）；
 4. 聚合页**不做任何开关控件**，只读展示当前开关状态。
@@ -24,11 +24,12 @@
 | D1 | 聚合入口放在**动效下拉**（条目 + 行尾齿轮），不是窗口管理分类 |
 | D2 | 聚合页范围 = **19 项勾选 + 每项全部参数可编辑** |
 | D3 | 勾选语义反转为**勾上 = 参与随机**（默认全勾；内部以 `Blacklist = 未勾选集合` 反向映射，配置格式不变） |
-| D4 | 下拉 = **总开关**：选「随机特效」= 启用随机；选 KWin 内置项 = 随机关闭、回退内置动画 |
+| D4 | 下拉 = **总开关**：选「随机特效 [Burn-My-Windows]」= 启用随机；选 KWin 内置项 = 随机关闭、回退内置动画 |
 | D5 | 下拉选择是**草稿态**，点「应用/确定」才提交（与 KDE 行为一致，不自造提交时机） |
 | D6 | **开关完全遵循 KDE**：不新增任何自建开关控件与平行状态，我方只读跟随 |
 | D7 | 参数渲染方式 = **自渲染**（读各特效 `main.xml` 动态生成控件），不嵌入上游 `config.ui` |
 | D8 | **旧入口移除**：「系统设置 → 窗口管理 → Burn Window」不再保留，齿轮为唯一入口 |
+| D9 | 占位条目显示名 = **`随机特效 [Burn-My-Windows]`**（spec 审阅时确定；与 19 个的 `Fire [Burn-My-Windows]` 命名风格一致） |
 
 ### 1.3 硬约束
 
@@ -44,7 +45,7 @@
 
 ### 方案 A：占位特效 + `isEffectLoaded` 同步跟随 ✅ **选定**
 
-新增占位特效 `kwin6_effect_bmw_random`（显示名「随机特效」）占据动效下拉条目；19 个 BMW 特效经 metadata 双改造从两个设置 UI 隐藏但保持常驻加载；仲裁逻辑在播放前同步查询占位是否已加载。开关状态唯一真相源是 KDE 写的 `[Plugins]` 键。
+新增占位特效 `kwin6_effect_bmw_random`（显示名「随机特效 [Burn-My-Windows]」，D9）占据动效下拉条目；19 个 BMW 特效经 metadata 双改造从两个设置 UI 隐藏但保持常驻加载；仲裁逻辑在播放前同步查询占位是否已加载。开关状态唯一真相源是 KDE 写的 `[Plugins]` 键。
 
 ### 方案 B：19 个留在 KDE 互斥组，由 ButtonGroup 联动管 Enabled ❌ 排除
 
@@ -74,7 +75,7 @@
 {
   "KPackageStructure": "KWin/Effect",
   "KPlugin": {
-    "Name": "随机特效",
+    "Name": "随机特效 [Burn-My-Windows]",
     "Description": "随机播放 Burn-My-Windows 的窗口开/关动画",
     "Icon": "preferences-system-windows-effect",
     "Category": "Window Open/Close Animation",
@@ -114,7 +115,7 @@
 
 ```
 ① 开关流（D4/D5/D6，完全遵循 KDE）
- 下拉选「随机特效」→ 点应用 → EffectsModel::save() 写
+ 下拉选「随机特效 [Burn-My-Windows]」→ 点应用 → EffectsModel::save() 写
  [Plugins] kwin6_effect_bmw_randomEnabled=true（带 KConfig::Notify）
  → KConfig D-Bus 通知（kconfig.cpp:523-534）
  → KWin KConfigWatcher（effecthandler.cpp:133）→ EffectsHandler::configChanged
@@ -284,6 +285,7 @@ if (!effects.isEffectLoaded(BMW_PLACEHOLDER_ID)) return false;
 | 提交时机 | 点应用才生效（不自造） | D5 + 源码 `effectsmodel.cpp:185-190` |
 | 参数渲染 | 自渲染（main.xml 驱动） | D7 |
 | 旧入口 | 移除，齿轮单一入口 | D8 |
+| 占位条目显示名 | `随机特效 [Burn-My-Windows]` | D9（spec 审阅时确定） |
 | 19 个加载策略 | 常驻加载 + 同步查占位 | 3.5-1（链路唯一解） |
 | metadata 改造 | internal + 改组名双保险 | 3.3（调研表述分歧的消解） |
 | 方案 | A（占位 + isEffectLoaded） | 第 2 章 |
