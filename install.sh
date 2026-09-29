@@ -22,7 +22,13 @@ INJECT_PY="$ROOT/lib/inject.py"
 UPSTREAM_DIR="$ROOT/upstream"
 UPSTREAM_MIRROR="https://ghfast.top/https://github.com/Schneegans/Burn-My-Windows.git"
 KCM_SO="$ROOT/kcm/build/bin/plasma/kcms/systemsettings/kcm_burnwindow.so"
-KCM_DEST="/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so"
+# KCM 落点必须是 kwin/effects/configs：占位特效 metadata 的 X-KDE-ConfigModule
+# 指向 kcm_burnwindow 时，KWin 按 id 只在该目录查找配置模块（spec 4.1，D8 单一入口）
+KCM_DEST="/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so"
+# 旧 systemsettings 落点：历史版本安装位置，装新落点时同凭据通道清理（防双入口）
+KCM_DEST_OLD="/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so"
+# 占位特效 id：下拉唯一条目 + 总开关载体；不参与注入/双改造遍历
+PLACEHOLDER_ID="kwin6_effect_bmw_random"
 
 DRY_RUN=0
 SKIP_BUILD=0
@@ -158,6 +164,9 @@ extract_pool() {
       warn "无法提取 effect id，跳过: $json"
       continue
     fi
+    # 占位不是池成员：它承载下拉条目与开关态，不参与随机/注入/双改造。
+    # 漏跳会让二次安装（占位已在目录中）得到 20 个池成员、注入数校验 die。
+    [ "$id" = "$PLACEHOLDER_ID" ] && continue
     POOL_IDS+=("$id")
   done
   POOL_CSV="$(IFS=,; echo "${POOL_IDS[*]:-}")"
@@ -186,6 +195,31 @@ do_build() {
   tar -xzf "$pkg" -C "$EFFECTS_DIR"
 }
 
+# ---------------------------------------------------------------- 占位特效
+# 下拉唯一条目「随机特效 [Burn-My-Windows]」的载体；main.js 为空实现。
+# 幂等：已存在则不覆盖（保留用户环境中的实际状态，模板变更不重置运行现场）。
+do_placeholder() {
+  local dst="$EFFECTS_DIR/$PLACEHOLDER_ID"
+  if [ -d "$dst" ]; then
+    log "占位特效已存在，跳过: $dst"
+    return 0
+  fi
+  cp -r "$ROOT/placeholder/$PLACEHOLDER_ID" "$dst"
+  log "已写入占位特效: $dst"
+}
+
+# ---------------------------------------------------------------- metadata 双改造
+# 只对池成员（19 个）执行：占位必须保持可见，天然被 POOL_IDS 排除。
+# 幂等由 patch_metadata 保证（已改造不写盘）；任一失败即中止安装。
+do_metadata_patch() {
+  local id count=0
+  for id in "${POOL_IDS[@]}"; do
+    python3 "$INJECT_PY" --patch-metadata --effect-dir "$EFFECTS_DIR/$id"
+    count=$((count + 1))
+  done
+  log "已双改造 $count 个 metadata（internal + bmw-hidden）"
+}
+
 # ---------------------------------------------------------------- 注入
 do_inject() {
   local dir json id count=0
@@ -200,6 +234,8 @@ do_inject() {
       warn "无法提取 effect id，跳过: $json"
       continue
     fi
+    # 占位无 BMW 锚点也无需仲裁：它只承载下拉条目与开关态，混入注入会 _die
+    [ "$id" = "$PLACEHOLDER_ID" ] && continue
     python3 "$INJECT_PY" \
       --effect-dir "$(dirname "$json")" \
       --effect-id "$id" \
@@ -273,6 +309,8 @@ for dir in "\$EFFECTS_DIR"/*/; do
     failed=1
     continue
   fi
+  # 占位无 BMW 锚点也无需仲裁：混入注入会让 inject.py _die、整个 apply 失败
+  [ "\$id" = "$PLACEHOLDER_ID" ] && continue
   if ! python3 "\$INJECT_PY" --effect-dir "\$(dirname "\$json")" --effect-id "\$id" \\
         --pool "\$POOL" --blacklist "\$BLACKLIST"; then
     echo "[apply-config] 注入失败: \$id" >&2
@@ -321,6 +359,17 @@ do_sudo_kcm() {
   # 提权失败必须显式终止并说明后果：KCM 只是可选组件，前面的特效注入 / kwinrc /
   # apply 脚本已经落盘，绝不能被 set -e 静默吞掉，也不能让用户误以为整体失败。
   # 凭据通道与 uninstall.sh 保持一致：sudo 缓存优先，其次 SUDO_PASSWORD 环境变量。
+  # 旧 systemsettings 落点在装新落点之前清理：两入口并存会违反 D8 单一入口；
+  # 删除失败不中止（旧文件本就不存在时 rm -f 幂等成功）。
+  if [ -e "$KCM_DEST_OLD" ]; then
+    log "清理旧 KCM 落点: $KCM_DEST_OLD"
+    if [ -n "${SUDO_PASSWORD:-}" ]; then
+      printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' rm -f "$KCM_DEST_OLD" || \
+        warn "旧落点清理失败（不影响新落点安装）: $KCM_DEST_OLD"
+    else
+      sudo rm -f "$KCM_DEST_OLD" || warn "旧落点清理失败（不影响新落点安装）: $KCM_DEST_OLD"
+    fi
+  fi
   if [ -n "${SUDO_PASSWORD:-}" ]; then
     printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' install -D -m 0644 "$KCM_SO" "$KCM_DEST" || \
       die "KCM 安装失败；已保留的用户级安装（特效注入 / kwinrc / apply 脚本）仍可用，配置未写入"
@@ -349,15 +398,18 @@ print_plan() {
   echo "计划（--dry-run，不落盘）："
   echo "  1. 检查依赖 (python3/node/kreadconfig6/kwriteconfig6$([ $SKIP_BUILD -eq 0 ] && echo '/cmake/ninja/git'))"
   echo "  2. $([ $SKIP_BUILD -eq 1 ] && echo '跳过构建' || echo "克隆 $UPSTREAM_MIRROR 并构建")"
+  echo "  3. 写入占位特效 $PLACEHOLDER_ID（下拉条目「随机特效 [Burn-My-Windows]」）"
   if [ "${#POOL_IDS[@]}" -gt 0 ]; then
-    echo "  3. 注入 ${#POOL_IDS[@]} 个特效: ${POOL_IDS[*]}"
+    echo "  4. 注入 ${#POOL_IDS[@]} 个特效: ${POOL_IDS[*]}"
+    echo "  5. metadata 双改造 ${#POOL_IDS[@]} 个（internal + bmw-hidden，备份 .orig）"
   else
-    echo "  3. 注入特效（$EFFECTS_DIR 中暂无特效，池成员待构建后提取）"
+    echo "  4. 注入特效（$EFFECTS_DIR 中暂无特效，池成员待构建后提取）"
+    echo "  5. metadata 双改造（池成员待构建后提取）"
   fi
-  echo "  4. $([ $SKIP_KWINRC -eq 1 ] && echo '跳过 kwinrc' || echo "写 $KWINRC 中 ${#POOL_IDS[@]} 个 Enabled=true")"
-  echo "  5. 生成 apply 脚本: $APPLY_SCRIPT"
-  echo "  6. $([ $SKIP_SUDO -eq 1 ] && echo '跳过 KCM 安装' || echo "sudo 安装 KCM → $KCM_DEST")"
-  echo "  7. 写配置: $CONFIG_FILE"
+  echo "  6. $([ $SKIP_KWINRC -eq 1 ] && echo '跳过 kwinrc' || echo "写 $KWINRC 中 ${#POOL_IDS[@]} 个 Enabled=true")"
+  echo "  7. 生成 apply 脚本: $APPLY_SCRIPT"
+  echo "  8. $([ $SKIP_SUDO -eq 1 ] && echo '跳过 KCM 安装' || echo "sudo 安装 KCM → $KCM_DEST（并清理旧落点）")"
+  echo "  9. 写配置: $CONFIG_FILE"
 }
 
 # ---------------------------------------------------------------- 配置应用
@@ -414,7 +466,9 @@ main() {
   # 顺序本身是需求：任一步失败即中止，配置不写（spec 7.2 #4）
   do_build
   extract_pool || die "未在 $EFFECTS_DIR 找到任何特效（池为空）"
+  do_placeholder
   do_inject
+  do_metadata_patch
   do_kwinrc
   do_apply_script
   do_sudo_kcm        # 唯一提权步骤

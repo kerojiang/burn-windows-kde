@@ -23,7 +23,11 @@ setup() {
   for d in "$REAL_EFFECTS"/*/; do
     id="$(basename "$d")"
     mkdir -p "$PREFIX/effects/$id/contents/code"
-    cp "$d/metadata.json" "$PREFIX/effects/$id/" 2>/dev/null || true
+    # metadata 同样必须是上游纯净态：真实环境被 patch 后 metadata.json 是
+    # 改造态而 .orig 才是原文，只复制 .orig 才能让幂等/备份断言与环境状态解耦
+    src="$d/metadata.json.orig"
+    [ -e "$src" ] || src="$d/metadata.json"
+    cp "$src" "$PREFIX/effects/$id/metadata.json" 2>/dev/null || true
     # fixture 必须是上游纯净态：真实环境被 e2e 首装后 main.js 已注入，
     # 而 inject.py 对"已注入但缺 .orig"会 exit 2（lib/inject.py 152-155）
     src="$d/contents/code/main.js.orig"
@@ -252,6 +256,115 @@ assert_not_exists "$HOME/burn-window-randomrc" "未在 \$HOME 顶层写配置"
 assert_not_exists "$HOME/burn-window-apply-config.sh" "未在 \$HOME 顶层写 apply 脚本"
 assert_not_exists "$HOME/kwinrc" "未在 \$HOME 顶层写 kwinrc"
 teardown
+
+# ---------------------------------------------------------------- Task 4: 占位 + metadata patch + KCM 落点
+echo "=== test_placeholder_installed ==="
+setup
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build
+assert_exit_code_zero "首装退出码为 0"
+PH="$PREFIX/effects/kwin6_effect_bmw_random"
+assert_exists "$PH/metadata.json" "占位 metadata.json 已装入 effects 目录"
+if [ -f "$PH/metadata.json" ]; then
+  if python3 - "$PH/metadata.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1], encoding="utf-8"))
+assert m["KPlugin"]["Id"] == "kwin6_effect_bmw_random"
+assert m["KPlugin"]["Name"] == "随机特效 [Burn-My-Windows]"
+assert m["KPlugin"]["EnabledByDefault"] is False
+assert m["X-KDE-ConfigModule"] == "kcm_burnwindow"
+PY
+  then pass "占位字段与模板一致"
+  else fail "占位字段与模板一致" "字段不符（见上方 Python 断言输出）"
+  fi
+fi
+assert_exists "$PH/contents/code/main.js" "占位 main.js 存在"
+if [ -f "$PH/contents/code/main.js" ]; then
+  # Review Focus #1：占位混入注入遍历会因缺锚点 _die 中止安装/apply
+  if grep -q "BMW_ARBITER" "$PH/contents/code/main.js"; then
+    fail "占位 main.js 未被注入" "含 BMW_ARBITER 标记（占位混入注入遍历）"
+  else
+    pass "占位 main.js 未被注入"
+  fi
+fi
+teardown
+
+echo "=== test_metadata_patched_19 ==="
+setup
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build
+assert_exit_code_zero "首装退出码为 0"
+if python3 - "$PREFIX/effects" <<'PY'
+import json, sys
+from pathlib import Path
+effects = Path(sys.argv[1])
+patched = 0
+for d in sorted(p for p in effects.iterdir() if p.is_dir()):
+    if d.name == "kwin6_effect_bmw_random":
+        continue  # 占位必须保持可见，不参与双改造
+    m = json.loads((d / "metadata.json").read_text(encoding="utf-8"))
+    assert m.get("X-KWin-Internal") == "true", f"{d.name} 缺 X-KWin-Internal"
+    assert m.get("X-KWin-Exclusive-Category") == "bmw-hidden", f"{d.name} 组名未改"
+    assert (d / "metadata.json.orig").exists(), f"{d.name} 缺 .orig 备份"
+    assert m["KPlugin"]["Id"] == d.name, f"{d.name} KPlugin.Id 被改动"
+    patched += 1
+assert patched == 19, f"patched={patched}，期望 19"
+PY
+then pass "19 个 metadata 双改造 + .orig 备份，占位不 patch"
+else fail "19 个 metadata 双改造 + .orig 备份，占位不 patch" "见上方断言输出"
+fi
+teardown
+
+echo "=== test_install_idempotent ==="
+setup
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build
+assert_exit_code_zero "第一次安装退出码为 0"
+ORIG1="$(md5sum "$PREFIX/effects/kwin6_effect_fire/metadata.json.orig" 2>/dev/null | cut -d' ' -f1)"
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build
+assert_exit_code_zero "第二次安装退出码为 0"
+ORIG2="$(md5sum "$PREFIX/effects/kwin6_effect_fire/metadata.json.orig" 2>/dev/null | cut -d' ' -f1)"
+assert_eq "$ORIG2" "$ORIG1" ".orig 保留首改原文（二次安装不覆盖备份）"
+assert_eq "$(grep -c 'BMW_ARBITER_BEGIN' "$PREFIX/effects/kwin6_effect_fire/contents/code/main.js")" "1" "main.js 注入仍只有一份"
+teardown
+
+echo "=== test_apply_skips_placeholder ==="
+# Review Focus #1 的裁判：占位混入 apply 遍历 → 空 main.js 无锚点 → inject _die → 非零退出
+setup
+run bash "$INSTALL" --prefix "$PREFIX" --skip-sudo --skip-build
+assert_exit_code_zero "首装退出码为 0"
+run bash "$INSTALL" --prefix "$PREFIX" --apply-config
+assert_exit_code_zero "apply-config 退出码为 0（占位已被跳过）"
+assert_output_contains "完成" "apply 输出完成文案"
+teardown
+
+echo "=== test_kcm_dest_new_path ==="
+setup
+# D8 单一入口：KCM 必须落 kwin/effects/configs（齿轮经 ConfigModule 按 id 查找），
+# 旧 systemsettings 落点一旦残留就会与聚合页形成双入口
+if grep -q '^KCM_DEST="/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so"$' "$INSTALL"; then
+  pass "KCM_DEST 赋值指向 kwin/effects/configs 新落点"
+else
+  fail "KCM_DEST 赋值指向 kwin/effects/configs 新落点" "未找到新落点赋值"
+fi
+if grep -q '^KCM_DEST=.*plasma/kcms/systemsettings' "$INSTALL"; then
+  fail "KCM_DEST 旧落点赋值已移除" "仍存在旧 systemsettings 赋值"
+else
+  pass "KCM_DEST 旧落点赋值已移除"
+fi
+run bash "$INSTALL" --dry-run --prefix "$PREFIX"
+assert_output_contains "kwin/effects/configs" "--dry-run 计划打印新 KCM 落点"
+teardown
+
+echo "=== test_old_kcm_dest_cleanup ==="
+FUNC_BODY="$(sed -n '/^do_sudo_kcm() {/,/^}/p' "$INSTALL")"
+if printf '%s' "$FUNC_BODY" | grep -q 'KCM_DEST_OLD'; then
+  pass "do_sudo_kcm 含旧落点清理逻辑"
+else
+  fail "do_sudo_kcm 含旧落点清理逻辑" "函数体未引用 KCM_DEST_OLD"
+fi
+if grep -q '^KCM_DEST_OLD="/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so"$' "$INSTALL"; then
+  pass "KCM_DEST_OLD 定义为旧 systemsettings 落点"
+else
+  fail "KCM_DEST_OLD 定义为旧 systemsettings 落点" "未找到字面定义"
+fi
 
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
