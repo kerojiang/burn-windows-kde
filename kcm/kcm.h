@@ -21,7 +21,12 @@ class BurnWindowKCM : public KQuickConfigModule
 
     // [{effectId: string, displayName: string, participating: bool,
     //   params: [{name, type, default, value}]}]
-    // participating = 未在黑名单（D3：勾上=参与，反转映射在 C++ 侧完成）；
+    // participating = 未在黑名单（D3：勾上=参与，反转映射在 C++ 侧完成，
+    // toggleParticipating 仍是唯一写入口）；
+    // 【2026-09-30 修订】QML 的 checked 绑定的是 kcm.blacklist（NOTIFY）而非
+    // 本字段 —— 本字段是 loadConfig 的一次性快照（CONSTANT pool，改黑名单不
+    // 重建 pool），程序化批量改（全选按钮）不会触发它更新 → 界面不刷新。
+    // 绑定 blacklist 后单个勾选与批量改都靠 blacklistChanged 自动重算。
     // params 来自各特效 contents/config/main.xml 的自渲染参数模型（D7）。
     Q_PROPERTY(QVariantList pool READ pool CONSTANT)
     // 当前黑名单（未勾选集合）

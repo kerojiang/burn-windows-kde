@@ -71,13 +71,55 @@ KCMUtils.SimpleKCM {
             text: i18n("勾选的特效参与窗口打开与关闭的随机选择；取消勾选则剔除。默认全部勾选。")
         }
 
-        // 开关只读徽标（D6）：只展示不操作；文案用字面量而非 i18n，
-        // 使无 GUI 环境的探针断言不依赖翻译环境
-        QQC2.Label {
-            font.bold: true
-            text: kcm.randomLoaded ? "随机特效：已启用" : "随机特效：未启用"
-            Component.onCompleted: {
-                console.log("BMW_KCM_SWITCH_BADGE=" + (kcm.randomLoaded ? "已启用" : "未启用"))
+        RowLayout {
+            id: badgeRow
+            Layout.fillWidth: true
+
+            // 全选判定：黑名单 ∩ pool = ∅。黑名单可能含池外历史残留（从 kwinrc
+            // 读入），故逐个核对池内成员而非直接看 blacklist.length。
+            readonly property bool allSelected: {
+                for (var i = 0; i < kcm.pool.length; i++) {
+                    if (kcm.blacklist.indexOf(kcm.pool[i].effectId) !== -1) {
+                        return false
+                    }
+                }
+                return true
+            }
+
+            // 开关只读徽标（D6）：只展示不操作；文案用字面量而非 i18n，
+            // 使无 GUI 环境的探针断言不依赖翻译环境
+            QQC2.Label {
+                font.bold: true
+                text: kcm.randomLoaded ? "随机特效：已启用" : "随机特效：未启用"
+                Component.onCompleted: {
+                    console.log("BMW_KCM_SWITCH_BADGE=" + (kcm.randomLoaded ? "已启用" : "未启用"))
+                }
+            }
+
+            Item { Layout.fillWidth: true }   // 撑开空间，让按钮靠右
+
+            // 全选/全不选：单个切换按钮，文案随状态自适应。
+            // 执行走既有 toggleParticipating 循环（D3 反转映射在 C++ 完成），
+            // 只改内存 m_blacklist，仍由 apply() 落盘 —— 与单个勾选同一路径，
+            // 不新增落盘时机。点击后界面刷新依赖 checked 绑定 kcm.blacklist
+            // （见下方 CheckBox 注释），不是这里显式去改 19 个勾选框。
+            QQC2.Button {
+                id: selectAllButton
+                text: badgeRow.allSelected ? i18n("全不选") : i18n("全选")
+                onClicked: {
+                    var target = !badgeRow.allSelected
+                    for (var i = 0; i < kcm.pool.length; i++) {
+                        kcm.toggleParticipating(kcm.pool[i].effectId, target)
+                    }
+                    // 点击探针：blacklistNow 供手动验收断言
+                    //（空 = 全选已写入；19 项 = 全不选已写入）
+                    console.log("BMW_KCM_SELECT_ALL clicked target=" + target
+                              + " blacklistNow=" + kcm.blacklist.join(","))
+                }
+                Component.onCompleted: {
+                    console.log("BMW_KCM_SELECT_ALL initial allSelected=" + badgeRow.allSelected
+                              + " text=" + text)
+                }
             }
         }
 
@@ -98,8 +140,16 @@ KCMUtils.SimpleKCM {
                         Layout.fillWidth: true
                         text: effectRoot.modelData.displayName
 
-                        // 单向绑定：界面永远反映参与语义的当前状态
-                        checked: effectRoot.modelData.participating
+                        // 参与语义 = 不在黑名单（与 kcm.cpp:126 的 !contains 同义，
+                        // 初始值与探针断言均不受影响）。
+                        // 绑 kcm.blacklist（带 NOTIFY blacklistChanged）而非
+                        // modelData.participating：后者是 pool(CONSTANT) 在
+                        // loadConfig 算好的一次性快照（kcm.h:26 + kcm.cpp:115-131），
+                        // toggleBlacklist 只改 m_blacklist 不重建 pool → 单个勾选
+                        // 能显示全靠用户点击本身改变了控件状态，而全选按钮的
+                        // 程序化批量改 19 项时绑定源纹丝不动 → 界面不刷新。
+                        // 绑定 blacklist 后两者都由 blacklistChanged 驱动重算。
+                        checked: kcm.blacklist.indexOf(effectRoot.modelData.effectId) === -1
 
                         // 用 clicked 而非 toggled —— toggled 在程序化赋值 checked 时
                         // 同样发出，会把初始化的绑定结果反写回模型

@@ -324,6 +324,27 @@ assert_eq "$GEAR_N" "19" "齿轮渲染数 == 19（每行一个）"
 echo "=== test_geometry_probe ==="
 assert_contains "BMW_KCM_GEOM " "高度几何探针进 journal（page/contentH/viewport/col）"
 
+# ================================================================ 8. 全选/全不选按钮
+# 单个切换按钮：状态自适应文案（未全选→「全选」，已全选→「全不选」）。
+# 初始默认全部勾选 → 应显示「全不选」。
+echo "=== test_select_all_button ==="
+assert_contains "BMW_KCM_SELECT_ALL initial allSelected=true text=全不选" "按钮初始态：默认全选 → 文案「全不选」"
+# 点击后的行为（blacklistNow 空/满）需真实点击，journal 断言由手动验收完成；
+# 这里先静态保证点击探针在源码里存在，防止被误删后手动验收无日志可读
+if grep -q 'BMW_KCM_SELECT_ALL clicked' "$KCM_SRC/ui/main.qml"; then
+  pass "onClicked 点击探针存在（手动验收断言 blacklistNow 用）"
+else
+  fail "onClicked 点击探针存在（手动验收断言 blacklistNow 用）" "main.qml 缺 clicked 探针"
+fi
+# 勾选绑定必须走 kcm.blacklist（带 NOTIFY blacklistChanged）——
+# 若退回 modelData.participating（pool 是 CONSTANT、快照不更新，kcm.h:26 +
+# kcm.cpp:115-131 实证），全选按钮的程序化批量改将无法刷新界面
+if grep -q 'checked: kcm.blacklist.indexOf' "$KCM_SRC/ui/main.qml"; then
+  pass "勾选绑定走 kcm.blacklist（NOTIFY 驱动，批量改可刷新）"
+else
+  fail "勾选绑定走 kcm.blacklist（NOTIFY 驱动，批量改可刷新）" "checked 未绑定 blacklist"
+fi
+
 # ---------------------------------------------------------------- 环境恢复
 echo
 echo "恢复环境：还原/移除测试期间写入的系统 KCM"
