@@ -359,22 +359,31 @@ else
   fail "窗口标题携带 BMW_PREVIEW: 协议前缀" "main.qml 缺协议字面量"
 fi
 
-# ================================================================ 10. 页面高度限制（需求4，bounded 设计已批准）
-# 用户批准：动效页可视区域固定 ~900（当前 fill 视口 1300.64），收起态内容
-# 854 + 余量 ~46；展开参数超出 900 → 页内滚动。系统设置窗口不动。
-echo "=== test_page_height_limit ==="
-# 静态：burnRoot 上的固定高度声明（900-999，容"900 左右"微调）
-if grep -A6 'id: burnRoot' "$KCM_SRC/ui/main.qml" | grep -qE '^[[:space:]]*height: 9[0-9][0-9][[:space:]]*$'; then
-  pass "burnRoot 声明固定高度 ~900"
+# ================================================================ 10. 系统设置窗口高度 ~900（需求4 第二轮，方案B根因修复）
+# 用户澄清「窗口非常高」指 "配置-系统设置" 主窗口本身（实测 1347）。
+# 诊断结论（IMPLSEQ/WINSEQ 探针实测）：宿主 SizeViewToRootObject 按本页
+# implicitHeight 调窗口，而加载瞬间 rootColumn 子项 implicit 未收敛产生
+# 峰值 1365（主题/字体异步应用前的默认值），窗口被推到 1365 后不回收 →
+# 钳到工作区 1347。客户端直接 resize 被 Wayland 拒（实测 winH 恒 1347）。
+# 修法：burnRoot.implicitHeight 封顶 900 —— 稳态 884 不触发 min（零行为
+# 变化），峰值 1365→900 → 宿主按 900 调窗；展开参数 1256→900 页内滚动。
+echo "=== test_window_height ==="
+# 静态：implicitHeight 封顶绑定在源码里（根因修复的实现特征）
+if grep -q 'Math.min(rootColumn.implicitHeight' "$KCM_SRC/ui/main.qml"; then
+  pass "源码含 implicitHeight 封顶绑定（峰值 1365→900）"
 else
-  fail "burnRoot 声明固定高度 ~900" "id: burnRoot 后 6 行内无 height: 9xx"
+  fail "源码含 implicitHeight 封顶绑定" "main.qml 缺 Math.min(rootColumn.implicitHeight...) 封顶"
 fi
-# 运行时：GEOM 实测 page —— 若容器 anchors.fill 覆盖了显式 height，
-# 此断言会失败并给出实测值 → 按设计启用备选（解除锚定后设高）
-if printf '%s' "$OUTPUT" | grep -q 'BMW_KCM_GEOM initial page=900'; then
-  pass "GEOM 实测 page=900（高度限制穿透容器生效）"
+# 运行时：窗口真实高度 ∈ [890,930] —— 判 winH（GEOM 探针字段，注意行格式
+# 是 "GEOM initial winWH=... implWH=... winH=..." —— winWH/implWH 在前，
+# 模式不能写 "GEOM initial winH=" 否则永不匹配）。范围覆盖两种实测关系：
+# 窗口=implicit(900) 与 =implicit+chrome(914)（898=884+14 与 1365=1365
+# 两种关系在时序中并存，chrome 归属未定）。超出即封顶未生效（winH=1347 =
+# 峰值窗口未回落）或封顶过紧（<890 挤压稳态 884）。
+if printf '%s' "$OUTPUT" | grep -qE 'winH=(89[0-9]|9[0-2][0-9])'; then
+  pass "窗口真实高度 900±（内容封顶驱动）"
 else
-  fail "GEOM 实测 page=900" "实测: $(printf '%s' "$OUTPUT" | grep -o 'GEOM initial page=[0-9.]*' | head -1)"
+  fail "窗口真实高度 900±" "实测: $(printf '%s' "$OUTPUT" | grep -oE 'winH=[0-9.]+' | head -1)"
 fi
 
 # ---------------------------------------------------------------- 环境恢复

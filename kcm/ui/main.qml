@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
+import QtQuick.Window
 import org.kde.kcmutils as KCMUtils
 import org.kde.kquickcontrols as KQuickControls
 
@@ -16,28 +17,24 @@ import org.kde.kquickcontrols as KQuickControls
 KCMUtils.SimpleKCM {
     id: burnRoot
     title: i18n("Burn Window")
-    // 页面高度固定 ~900（2026-09-30 批准的需求4设计）：不 fill 视口（fill 时
-    // page=1319、收起内容 854 → 底部 446 空白）。900 = 854 + 余量 46，展开
-    // 参数超出 → 页内滚动；若被容器锚定覆盖则切备选（解除锚定后设高）。
-    height: 900
-    // 容器（kcmshell6/systemsettings）布局时显式 setHeight(视口高)，会断开
-    // QML 静态绑定 —— 实测锚定已解除、Layout 约束已设，onCompleted 时
-    // h=900 但下一帧仍被改回 1319。用 onHeightChanged 拦截拉回：容器设高
-    // → 本 handler 延一拍设回 900；900 自身的变化被 if 挡住不递归。
-    // height 拦截机制的运行证据：容器每次 setHeight(视口) → 这里打一条 →
-    // callLater 拉回 900。启动收敛序列（实测）：-46→852→1319→900→1318→
-    // 1300→900。日后若"页面又变高"，看此序列即可判断是容器设的还是拦截失效。
-    onHeightChanged: {
-        console.log("BMW_KCM_HSEQ h=" + height)
-        if (height !== 900) {
-            Qt.callLater(function () { burnRoot.height = 900 })
-        }
-    }
-    // 容器若用 Layout 管理，这两个与 height: 900 一起才锁得住；
-    // 非 Layout 管理时被忽略，无副作用。
-    Layout.fillHeight: false
-    Layout.minimumHeight: 900
-    Layout.maximumHeight: 900
+    // 页面高度随窗口 fill —— 撤掉首轮的页面 900 拦截（2a19d61）：用户实际
+    // 要的是系统设置窗口 900 左右（窗口实测 1347/1319），窗口设好后页面
+    // fill 自然 ~910；继续锁页面反而会在窗口拖大时制造底部空白。
+
+    // 系统设置窗口高度 ~900（需求4 第二轮，方案B根因修复）：宿主
+    // QQuickWidget SizeViewToRootObject 按本页 implicitWidth/Height 调顶层
+    // 窗口（Qt qquickwidget.cpp rootObjectSize 读 root 的 implicit*）——
+    // 实测加载瞬间 rootColumn 子项 implicit 未收敛产生峰值 1365
+    // （IMPLSEQ 序列 11→1365→884，主题/字体异步应用前的默认值），窗口被
+    // 推到 1365 后不回收 → 钳到工作区 1347（全屏）。客户端直接 resize 被
+    // Wayland 拒（实测 winH 恒 1347，BMW_KCM_WIN requested=950 无效）。
+    // 封顶 900：稳态 884 不触发 min（零行为变化）；峰值 1365→900 → 窗口停
+    // 900±；展开参数 1256→900 → 页内滚动（设计行为）。
+    // +18 是实测三态稳定线性关系 burnRoot.implicit = colImpl + 18
+    // （866→884 / 1347→1365 / 1238→1256；构成 = padding 12 + header 6，
+    // 见 ScrollablePage.qml:233 的 contentHeight+topPadding+bottomPadding
+    // +implicitHeaderHeight+spacing）。硬编码前有三态一致实测背书。
+    implicitHeight: Math.min(rootColumn.implicitHeight + 18, 900)
 
     // 初始 GEOM 探针：延 500ms 等 height 收敛（见 onHeightChanged 的 HSEQ）
     Timer {
@@ -84,7 +81,16 @@ KCMUtils.SimpleKCM {
         // "内容超高时 page 是否收缩/是否出现滚动"。
         function dumpGeom(tag) {
             var fl = burnRoot.flickable
+            var win = Window.window
+            // winH = 顶层窗口实际高度：page > winH 直接证明"窗口没真变矮"
+            // （Qt 属性设了 950 但 compositor 未应用 resize 时会看到这种矛盾）
+            // implWH = 本页 implicit 尺寸 —— SizeViewToRootObject 下宿主按它
+            // 调窗口（实测对照：Scale 页 400x200、本页全屏 1347），定位谁在
+            // 撑窗口看这里。
             console.log("BMW_KCM_GEOM " + tag
+                      + " winWH=" + (win ? win.width + "x" + win.height : "-1")
+                      + " implWH=" + burnRoot.implicitWidth + "x" + burnRoot.implicitHeight
+                      + " winH=" + (win ? win.height : -1)
                       + " page=" + burnRoot.height
                       + " implicitPage=" + burnRoot.implicitHeight
                       + " contentH=" + burnRoot.contentHeight
@@ -393,17 +399,35 @@ KCMUtils.SimpleKCM {
         }
     }
 
+    // 内容隐含尺寸序列（诊断窗口 898→1365 跳涨：实测本页加载瞬间
+    // rootColumn.implicitHeight 峰值 1347（→burnRoot 1365），宿主按峰值推
+    // 窗口后不回收 → 钳到工作区 1347；稳态收敛 866（→884）。峰值 1347 =
+    // 23 子项行高 53-77 的未收敛总和，稳态行高 ~33 —— 打 PEAK/STABLE 两态
+    // 明细对比定位收敛前后差异元素）。
+    onImplicitHeightChanged: {
+        var tag = implicitHeight > 1000 ? "PEAK" : (implicitHeight > 800 ? "STABLE" : "")
+        if (tag === "")
+            return
+        console.log("BMW_KCM_IMPLSEQ " + tag + " h=" + implicitHeight + " w=" + implicitWidth
+                  + " colH=" + rootColumn.height + " colImpl=" + rootColumn.implicitHeight)
+        for (var i = 0; i < rootColumn.children.length; i++) {
+            var c = rootColumn.children[i]
+            console.log("BMW_KCM_IMPLDET " + tag + " i=" + i
+                      + " h=" + c.height + " implH=" + c.implicitHeight
+                      + " vis=" + c.visible)
+        }
+    }
+
+    // 窗口尺寸变化序列（诊断：systemsettings 按 KCM 内容调窗口 —— 实测
+    // Scale 页 400x200、本页全屏 1347）。切 KCM 时看本序列即知窗口何时被
+    // 谁撑大/缩小。
+    Window.onHeightChanged: console.log("BMW_KCM_WINSEQ wh=" + Window.window.width + "x" + Window.window.height)
+    Window.onWidthChanged: console.log("BMW_KCM_WINSEQ wh=" + Window.window.width + "x" + Window.window.height)
+
     Component.onCompleted: {
-        // 备选方案（2026-09-30 实测：静态 height: 900 被容器锚定覆盖，
-        // GEOM initial page=1319 不变）：解除容器对本页的垂直锚定 ——
-        // anchors.fill 组合的 top/bottom 拆掉，left/right 保留 → 宽度仍
-        // 随窗口变化，高度交还给静态 height: 900。随后（事件循环下一拍、
-        // 布局重算后）再打 initial 探针。
-        anchors.top = undefined
-        anchors.bottom = undefined
-        // 初始探针延到布局收敛后：容器 setHeight(视口) 与 onHeightChanged
-        // 拦截拉回要数拍才稳（HSEQ 实测 -46→852→1319→900→1318→1300→900），
-        // 同步 callLater 打到的是中间态 1319。500ms 后稳定值是 900。
+        // 窗口高度改由 implicitHeight 封顶驱动（宿主 SizeViewToRootObject
+        // 按内容调窗），不再客户端 resize（Wayland 实测被拒）。初始 GEOM
+        // 探针延 500ms 等布局收敛。
         initialGeomTimer.start()
         // 诊断探针：证明 QML 已加载，并主动输出自身 QRC 路径。
         // 不依赖 Qt 的日志格式 —— 实测 Qt6 的 console.log 写入 journal 时
