@@ -310,6 +310,20 @@ echo "=== test_param_control_wiring ==="
 # 隔离 kwinrc 为空（launch_and_collect 用 prefix 空文件）→ 初始值必须回落 default
 assert_contains "BMW_KCM_PARAM_EDIT kwin6_effect_fire Duration=1500" "fire Duration 初始值 = main.xml default 1500"
 
+# ================================================================ 6. 行操作按钮（需求1：纯图标 + tooltip）
+# 参数入口按钮必须是图标（icon.name）而非文字，tooltip 承载说明文案
+echo "=== test_row_action_buttons ==="
+assert_contains "BMW_KCM_GEAR kwin6_effect_fire icon=settings-configure" "fire 的齿轮图标（icon=settings-configure，无文字标签）"
+assert_contains "tooltip=" "齿轮按钮暴露 tooltip 文案"
+GEAR_N="$(printf '%s' "$OUTPUT" | grep -c 'BMW_KCM_GEAR ')"
+assert_eq "$GEAR_N" "19" "齿轮渲染数 == 19（每行一个）"
+
+# ================================================================ 7. 高度几何探针（需求4诊断）
+# 现象「内容不多但页面被撑高」根因未定 —— 探针进 journal 供定位，
+# 不断言具体数值（高度预期值待实测后才可断言）
+echo "=== test_geometry_probe ==="
+assert_contains "BMW_KCM_GEOM " "高度几何探针进 journal（page/contentH/viewport/col）"
+
 # ---------------------------------------------------------------- 环境恢复
 echo
 echo "恢复环境：还原/移除测试期间写入的系统 KCM"

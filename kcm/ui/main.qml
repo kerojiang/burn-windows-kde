@@ -37,8 +37,33 @@ KCMUtils.SimpleKCM {
     }
 
     ColumnLayout {
+        id: rootColumn
         width: parent.width
         spacing: 8
+
+        // 高度几何探针（需求4诊断）：现象「内容不多但页面被撑高」。
+        // SimpleKCM = Kirigami.ScrollablePage（自带滚动，源码 SimpleKCM.qml:37），
+        // 故根因不在"缺滚动"，需实测各层高度定位谁撑高。
+        // 用 Qt.callLater —— ScrollablePage 的 flickable/anchors 在其自身
+        // Component.onCompleted 才装配（ScrollablePage.qml:324-368），
+        // 子项 onCompleted 早于父项，直接读会拿到装配前的值。
+        // dumpGeom(tag) 可复用：初始一次 + 每次展开/收起参数面板各一次，
+        // tag 区分状态（initial / toggle:<id>:<visible>），用于判断
+        // "内容超高时 page 是否收缩/是否出现滚动"。
+        function dumpGeom(tag) {
+            var fl = burnRoot.flickable
+            console.log("BMW_KCM_GEOM " + tag
+                      + " page=" + burnRoot.height
+                      + " implicitPage=" + burnRoot.implicitHeight
+                      + " contentH=" + burnRoot.contentHeight
+                      + " viewport=" + (fl ? fl.height : -1)
+                      + " col=" + rootColumn.height
+                      + " colImplicit=" + rootColumn.implicitHeight
+                      + " n=" + rootColumn.children.length)
+        }
+        Component.onCompleted: {
+            Qt.callLater(function () { rootColumn.dumpGeom("initial") })
+        }
 
         QQC2.Label {
             Layout.fillWidth: true
@@ -87,10 +112,34 @@ KCMUtils.SimpleKCM {
                         }
                     }
 
-                    QQC2.Button {
+                    QQC2.ToolButton {
+                        id: gearButton
                         visible: effectRoot.modelData.params.length > 0
-                        text: paramsColumn.visible ? "参数 ▾" : "参数 ▸"
-                        onClicked: paramsColumn.visible = !paramsColumn.visible
+                        // 纯图标 + tooltip：按钮本体不出现文字，说明文案走悬停提示。
+                        // ToolButton 没有 tooltip 属性（Qt 源码 ToolButton.qml 与 qmldir
+                        // 类型定义均无，2026-09-30 实证），写 tooltip.text 会
+                        // "Cannot assign to non-existent property" 导致整个 QML 加载失败
+                        // —— journal 实测原文见 main.qml:118。必须用 ToolTip attached
+                        // property，KDE 先例 breeze/ItemDelegate.qml:32-33 同款写法。
+                        icon.name: "settings-configure"
+                        readonly property string tip: paramsColumn.visible ? i18n("收起参数") : i18n("设置参数")
+                        QQC2.ToolTip.visible: hovered
+                        QQC2.ToolTip.text: gearButton.tip
+                        QQC2.ToolTip.delay: 500
+                        onClicked: {
+                            paramsColumn.visible = !paramsColumn.visible
+                            // 展开/收起后立即打几何快照：判断内容超高时
+                            // page 是否收缩到内容高度、滚动条是否出现
+                            rootColumn.dumpGeom("toggle:" + effectRoot.modelData.effectId + ":" + paramsColumn.visible)
+                        }
+
+                        Component.onCompleted: {
+                            // 诊断探针：图标名 + 可见性 + tooltip 文案进 journal，供无 GUI 断言
+                            console.log("BMW_KCM_GEAR " + effectRoot.modelData.effectId
+                                      + " icon=" + icon.name
+                                      + " visible=" + visible
+                                      + " tooltip=" + tip)
+                        }
                     }
                 }
 

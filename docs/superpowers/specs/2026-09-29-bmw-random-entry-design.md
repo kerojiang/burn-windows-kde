@@ -270,7 +270,9 @@ if (!effects.isEffectLoaded(BMW_PLACEHOLDER_ID)) return false;
 
 ### 7.3 范围外（YAGNI）
 
-概率/权重配置、参数导入导出、动画预览、KWin 5 兼容、非 Arch 发行版适配、聚合页搜索/过滤。
+概率/权重配置、参数导入导出、KWin 5 兼容、非 Arch 发行版适配、聚合页搜索/过滤。
+
+> **2026-09-30 修订**：原列于此处的「动画预览」经用户验收轮批准**移入范围**，机制与方案见 §8 决策记录「动画预览」行。
 
 ---
 
@@ -290,6 +292,7 @@ if (!effects.isEffectLoaded(BMW_PLACEHOLDER_ID)) return false;
 | 19 个加载策略 | 常驻加载 + 同步查占位 | 3.5-1（链路唯一解） |
 | metadata 改造 | internal + 改组名双保险 | 3.3（调研表述分歧的消解） |
 | 方案 | A（占位 + isEffectLoaded） | 第 2 章 |
+| **动画预览（2026-09-30 移入范围）** | 每行加预览图标按钮 → KCM 开临时窗口播一次该特效后自动关闭 | 用户验收轮批准，移出 §7.3 YAGNI。**机制调研（KWin v6.7.5 源码 + `qdbus6` 实测）确证无官方预览通道**：`src/org.kde.kwin.Effects.xml:3-42` 仅 9 方法（reconfigure/load/toggle/unload/isLoaded/isSupported/supportInformation/debug），全源码 `playEffect\|previewEffect\|startEffect` **0 命中**，`qdbus6 org.kde.KWin /Effects` 输出与之一致；KDE 动效 KCM 亦无预览（`src/kcms/effects/` grep `preview\|thumbnail\|demo` 唯一命中是 `kcm_kwin_effects.json` 的搜索关键词文案，`Effect.qml:105-116` 只有 Configure… 按钮）；scripted 特效**只能由真实窗口开/关事件驱动**（`contents/code/main.js:113-115` connect `effects.windowAdded/windowClosed`，C++ 侧无手动调用入口）。**方案**：临时窗口（开→按 Duration 延时→关）+ 窗口标题携带 `BMW_PREVIEW:<id>` 协议 + `lib/arbiter.js` 识别协议后绕过 `eligible` 抽签强制 winner（`arbiter.js:42-56`）。**代价**：改核心仲裁逻辑、重注入 19 个特效。**未实测项**：caption 到达 vs `windowAdded` 时序（协议层推断）、开窗对系统设置焦点的影响 |
 
 ---
 
