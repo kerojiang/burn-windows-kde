@@ -442,6 +442,50 @@ do_sudo_kcm() {
   fi
 }
 
+# ---------------------------------------------------------------- i18n catalog（用户级）
+# KCM 聚合页翻译：kcm/po/zh_CN.po → kcm_burnwindow.mo → ~/.local/share/locale。
+# 两个命名约束（2026-09-30 实测定案）：
+#  1) mo 文件名必须 = KCM pluginId（kcm_burnwindow）—— kcmutils
+#     KQuickConfigModule::mainUi() 硬编码 setTranslationDomain(pluginId)，
+#     QML i18n() 只按 pluginId 查 catalog（burn-window.mo 名三轮取不到译文）。
+#  2) 目录必须是 zh_CN（不是 po 头原名 zh_Hans）：gettext 语言链 zh_CN→zh 不含
+#     zh_Hans，系统 KDE catalog 实际全在 zh_CN（/usr/share/locale/zh_CN 含 200 个
+#     kcm_*/plasmashell catalog，zh_Hans 仅 hunspell），装 zh_Hans 目录取不到。
+# 用户级落点免提权；测试 LANG=C 不依赖此文件，缺失只影响中文环境显示。
+# 另：19 特效上游 catalog（burn-my-windows.mo，域由 metadata
+# X-KWin-Config-TranslationDomain 显式声明）同样只随包提供 zh_Hans 目录 ——
+# 这里复制出 zh_CN 落点，KWin 参数面板才能在 zh_CN 环境取到译文。
+do_install_i18n() {
+  local po="$ROOT/kcm/po/zh_CN.po"
+  local mo_dir="$HOME/.local/share/locale/zh_CN/LC_MESSAGES"
+  if [ -f "$po" ] && command -v msgfmt >/dev/null 2>&1; then
+    mkdir -p "$mo_dir"
+    if msgfmt -o "$mo_dir/kcm_burnwindow.mo" "$po" 2>/dev/null; then
+      log "已安装 i18n catalog: $mo_dir/kcm_burnwindow.mo"
+    else
+      warn "msgfmt 编译失败，跳过 KCM i18n catalog（不影响安装主体）"
+    fi
+  elif [ ! -f "$po" ]; then
+    log "无 po 文件，跳过 KCM i18n catalog"
+  else
+    warn "msgfmt 缺失，跳过 KCM i18n catalog（中文环境将显示英文原文）"
+  fi
+
+  # 19 特效上游 catalog 补 zh_CN 落点（已存在则覆盖，保持与 zh_Hans 源一致）
+  local src dst count=0
+  for src in "$EFFECTS_DIR"/*/contents/locale/zh_Hans/LC_MESSAGES/*.mo; do
+    [ -f "$src" ] || continue
+    dst="${src/\/zh_Hans\//\/zh_CN\/}"
+    mkdir -p "$(dirname "$dst")"
+    if cp -f "$src" "$dst" 2>/dev/null; then
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" -gt 0 ]; then
+    log "已为 $count 个特效 catalog 补 zh_CN 落点（上游仅提供 zh_Hans）"
+  fi
+}
+
 # ---------------------------------------------------------------- 配置（最后一步）
 # 配置是"安装完成"的标志：必须在构建、注入、kwinrc、KCM 全部成功后才写，
 # 这样任一步失败都不会留下看似已安装的状态。
@@ -539,6 +583,7 @@ main() {
   do_kwinrc
   do_apply_script
   do_sudo_kcm        # 唯一提权步骤
+  do_install_i18n    # KCM 翻译 catalog（用户级，免提权）
   do_write_config    # 最后
 
   log "安装完成。配置: $CONFIG_FILE"

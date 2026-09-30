@@ -185,13 +185,44 @@ def _meta_path(effect_dir) -> Path:
     return Path(effect_dir) / "metadata.json"
 
 
-def patch_metadata(effect_dir) -> bool:
-    """metadata 双改造：加 X-KWin-Internal=true、Exclusive-Category 改 bmw-hidden。
+# i18n（2026-09-30）：19 特效 metadata 语言键素材。Name 中译与上游
+# po/zh_Hans.po 的特效名条目一致（Fire→烈火燃烧 等）；Description 为本项目
+# 翻译（上游 pot 无 Description msgid）。key = 部署目录名（KWin 效果 id）。
+BMW_ZH_META = {
+    "kwin6_effect_aura_glow": ("辉光萦绕 [Burn-My-Windows]", "边缘点亮的辉光动画"),
+    "kwin6_effect_doom": ("毁灭战士 [Burn-My-Windows]", "让你的窗口融化"),
+    "kwin6_effect_energize_a": ("碎片融解A [Burn-My-Windows]", "用光束把窗口传送走"),
+    "kwin6_effect_energize_b": ("碎片融解B [Burn-My-Windows]", "换用另一种传送技术，呈现不同的视觉效果"),
+    "kwin6_effect_fire": ("烈火燃烧 [Burn-My-Windows]", "致敬 Compiz 的经典特效"),
+    "kwin6_effect_focus": ("聚焦 [Burn-My-Windows]", "专注点，老兄！"),
+    "kwin6_effect_glide": ("滑翔 [Burn-My-Windows]", "以细腻的 3D 效果将窗口淡出至透明"),
+    "kwin6_effect_glitch": ("电子脉冲 [Burn-My-Windows]", "给你的窗口加上一些有意为之的图形故障"),
+    "kwin6_effect_hexagon": ("蜂巢拼图 [Burn-My-Windows]", "发光线条与六边形瓷砖，科技感十足"),
+    "kwin6_effect_incinerate": ("燃烧蔓开 [Burn-My-Windows]", "比火焰更慢、但绝对更华丽的演绎"),
+    "kwin6_effect_pixelate": ("像素化 [Burn-My-Windows]", "窗口像素化并随机隐藏像素"),
+    "kwin6_effect_pixel_wheel": ("像素轮 [Burn-My-Windows]", "窗口像素化并以轮盘样式隐藏像素"),
+    "kwin6_effect_pixel_wipe": ("像素擦除 [Burn-My-Windows]", "窗口像素化并从指针位置开始径向隐藏像素"),
+    "kwin6_effect_portal": ("传送门 [Burn-My-Windows]", "把窗口传送到其他时空"),
+    "kwin6_effect_rgbwarp": ("炫彩跃迁 [Burn-My-Windows]", "红蓝绿，再见啦"),
+    "kwin6_effect_team_rocket": ("火箭疾袭 [Burn-My-Windows]", "……又飞向宇宙了！"),
+    "kwin6_effect_tv": ("电视效果 [Burn-My-Windows]", "关窗时像关掉一台电视"),
+    "kwin6_effect_tv_glitch": ("电视故障 [Burn-My-Windows]", "关窗时像一台故障频发的老式电视"),
+    "kwin6_effect_wisps": ("精灵飞散 [Burn-My-Windows]", "让这些小精灵把你的窗口带入梦乡"),
+}
 
-    目的：19 个特效从「动效下拉」与「桌面特效列表」两个设置 UI 同时隐藏，
+
+def patch_metadata(effect_dir) -> bool:
+    """metadata 三改造：隐藏键双改造 + KPlugin 补 zh_Hans 语言键。
+
+    隐藏改造：加 X-KWin-Internal=true、Exclusive-Category 改 bmw-hidden ——
+    19 个特效从「动效下拉」与「桌面特效列表」两个设置 UI 同时隐藏，
     运行时加载不受影响（KWin effectloader 不读 X-KWin-Internal）。
+    语言键（i18n 2026-09-30）：Name/Description 的 zh_CN 主键（KWin 官方惯例，
+    KPluginMetaData 按 zh_CN 查）+ zh_Hans 兼容键，KWin 与聚合页按系统语言取值；
+    中译源自 BMW_ZH_META。
     首次修改前备份原文为 metadata.json.orig —— uninstall 还原的唯一依据；
-    已完成改造 → 不写盘返回 False（幂等）。任何失败走 _die（退出码 2）。
+    全部键均已就位 → 不写盘返回 False（幂等，语言键与隐藏键分别判断）。
+    任何失败走 _die（退出码 2）。
     """
     meta = _meta_path(effect_dir)
     if not meta.exists():
@@ -202,16 +233,36 @@ def patch_metadata(effect_dir) -> bool:
     except json.JSONDecodeError as exc:
         _die(f"metadata.json 不是合法 JSON: {meta}: {exc}")
 
-    if data.get("X-KWin-Internal") == "true" and data.get("X-KWin-Exclusive-Category") == "bmw-hidden":
-        return False  # 已改造，幂等返回
+    changed = False
+
+    # 语言键补齐（幂等：zh_CN/zh_Hans 双键各查各补；未知 id 跳过不阻断隐藏改造）。
+    # 双键依据：KWin 官方特效 metadata 中文键用 zh_CN（系统 /usr/share/kwin/effects
+    # 实证 cube 等用 Name[zh_CN]、零个 zh_Hans），KPluginMetaData 按 zh_CN 查；zh_Hans
+    # 保留给 KCM 手写 fallback 链与上游 po 惯例（本仓库 kcm.cpp effectDisplayName）。
+    zh = BMW_ZH_META.get(Path(effect_dir).name)
+    if zh:
+        kplugin = data.setdefault("KPlugin", {})
+        for key, value in (("Name[zh_CN]", zh[0]), ("Description[zh_CN]", zh[1]),
+                           ("Name[zh_Hans]", zh[0]), ("Description[zh_Hans]", zh[1])):
+            if key not in kplugin:
+                kplugin[key] = value
+                changed = True
+
+    # 隐藏改造（幂等：两键均已就位则不改）
+    if data.get("X-KWin-Internal") != "true" \
+            or data.get("X-KWin-Exclusive-Category") != "bmw-hidden":
+        data["X-KWin-Internal"] = "true"
+        data["X-KWin-Exclusive-Category"] = "bmw-hidden"
+        changed = True
+
+    if not changed:
+        return False  # 全部改造已完成，幂等返回
 
     backup = Path(str(meta) + ".orig")
     if not backup.exists():
         # 只在首次修改时备份，保留上游原文（重复 patch 不覆盖 .orig）
         backup.write_text(current, encoding="utf-8")
 
-    data["X-KWin-Internal"] = "true"
-    data["X-KWin-Exclusive-Category"] = "bmw-hidden"
     meta.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return True
 

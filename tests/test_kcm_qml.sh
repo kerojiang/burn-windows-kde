@@ -9,6 +9,11 @@
 # （KCM 必须装进系统路径才能按名加载，见 test_kcm_build.sh）。
 set -u
 
+# i18n（2026-09-30）：文案原文已统一英文（KDE 规范），测试固定 C locale →
+# i18n() fallback 返回英文原文，断言不依赖 .mo 是否安装（与探针字面量
+# 「不依赖翻译环境」的既有 Ruling 同源）。
+export LANG=C LC_ALL=C
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KCM_SRC="$ROOT/kcm"
 KCM_DEST="/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so"
@@ -289,10 +294,12 @@ assert_eq "$TRUE_N" "19" "黑名单为空 → 19 个成员全部 participating=t
 assert_eq "$FALSE_N" "0" "无 participating=false 的成员"
 
 echo "=== test_switch_badge_rendered ==="
-if printf '%s' "$OUTPUT" | grep -qE 'BMW_KCM_SWITCH_BADGE=(已启用|未启用)'; then
-  pass "开关徽标只读探针存在（值域 已启用|未启用）"
+# i18n 后徽标走 i18n("Random effects: Enabled/Disabled")，探针值随显示文本
+# 的状态词走（LANG=C 下 = 英文原文）
+if printf '%s' "$OUTPUT" | grep -qE 'BMW_KCM_SWITCH_BADGE=(Enabled|Disabled)'; then
+  pass "开关徽标只读探针存在（值域 Enabled|Disabled，i18n 英文原文）"
 else
-  fail "开关徽标只读探针存在（值域 已启用|未启用）" "未找到 BMW_KCM_SWITCH_BADGE 行"
+  fail "开关徽标只读探针存在（值域 Enabled|Disabled）" "未找到 BMW_KCM_SWITCH_BADGE 行"
 fi
 # D6：页面不得出现任何 toggle 开关 —— 静态断言（不依赖 journal）
 if grep -qE 'setRandomLoaded|toggleLoaded|QQC2\.Switch[ {]' "$KCM_SRC/ui/main.qml"; then
@@ -325,10 +332,11 @@ echo "=== test_geometry_probe ==="
 assert_contains "BMW_KCM_GEOM " "高度几何探针进 journal（page/contentH/viewport/col）"
 
 # ================================================================ 8. 全选/全不选按钮
-# 单个切换按钮：状态自适应文案（未全选→「全选」，已全选→「全不选」）。
-# 初始默认全部勾选 → 应显示「全不选」。
+# 单个切换按钮：状态自适应文案（未全选→「Select All」，已全选→「Deselect
+# All」）。i18n 后原文英文，LANG=C 下显示英文原文。
+# 初始默认全部勾选 → 应显示「Deselect All」。
 echo "=== test_select_all_button ==="
-assert_contains "BMW_KCM_SELECT_ALL initial allSelected=true text=全不选" "按钮初始态：默认全选 → 文案「全不选」"
+assert_contains "BMW_KCM_SELECT_ALL initial allSelected=true text=Deselect All" "按钮初始态：默认全选 → 文案 Deselect All（i18n 英文原文）"
 # 点击后的行为（blacklistNow 空/满）需真实点击，journal 断言由手动验收完成；
 # 这里先静态保证点击探针在源码里存在，防止被误删后手动验收无日志可读
 if grep -q 'BMW_KCM_SELECT_ALL clicked' "$KCM_SRC/ui/main.qml"; then
@@ -384,6 +392,112 @@ if printf '%s' "$OUTPUT" | grep -qE 'winH=(89[0-9]|9[0-2][0-9])'; then
   pass "窗口真实高度 900±（内容封顶驱动）"
 else
   fail "窗口真实高度 900±" "实测: $(printf '%s' "$OUTPUT" | grep -oE 'winH=[0-9.]+' | head -1)"
+fi
+
+# ================================================================ 11. i18n 中英双语（设计批准 2026-09-30）
+# 原文英文（KDE 规范）+ 翻译域注册 + po 译文 + metadata 语言键。
+# 头部已 export LANG=C → 运行时 i18n fallback 英文原文（第 4/8 节断言消费），
+# 本节为静态断言：域/po/语言键/文案原文的源码特征，不依赖 .mo 安装。
+echo "=== test_i18n ==="
+# 翻译域：无域则中文环境取不到译文（i18n 恒回原文）
+if grep -q 'setApplicationDomain("kcm_burnwindow")' "$KCM_SRC/kcm.cpp"; then
+  pass "翻译域已注册（setApplicationDomain kcm_burnwindow）"
+else
+  fail "翻译域已注册" "kcm.cpp 缺 setApplicationDomain(\"kcm_burnwindow\")"
+fi
+# 文案原文不得再是中文（中文改由 po 译文提供）
+if grep -qP 'i18n\("[^"]*[\p{Han}]' "$KCM_SRC/ui/main.qml"; then
+  fail "QML i18n 原文统一英文" "main.qml 存在中文 i18n 原文：$(grep -oP 'i18n\("[^"]*[\p{Han}][^"]*"' "$KCM_SRC/ui/main.qml" | head -1)"
+else
+  pass "QML i18n 原文统一英文（中文由 po 提供）"
+fi
+# 裸中文字面量清零：徽标必须走 i18n（探针值同样经 i18n）
+if grep -q 'i18n("Random effects:' "$KCM_SRC/ui/main.qml"; then
+  pass "徽标文案走 i18n（Random effects: ...）"
+else
+  fail "徽标文案走 i18n" "main.qml 缺 i18n(\"Random effects: ...\")"
+fi
+# po 文件 + 关键 msgid（Select All/Deselect All 供第 4/8 节语义，Preview 对齐上游 pot）
+PO="$KCM_SRC/po/zh_CN.po"
+if [ -f "$PO" ] && grep -q 'msgid "Select All"' "$PO" && grep -q 'msgid "Deselect All"' "$PO" && grep -q 'msgid "Preview this effect"' "$PO"; then
+  pass "kcm/po/zh_CN.po 存在且含关键 msgid"
+else
+  fail "kcm/po/zh_CN.po 存在且含关键 msgid" "PO=$PO 缺失或缺 Select All/Deselect All/Preview this effect"
+fi
+# displayName locale 感知：聚合页特效名随语言切换，且必须有 zh_Hans 档
+# （KDE 中文语言代码惯例 zh_Hans；基础链 Name[locale]→Name[locale简码]→Name
+#   覆盖不到 zh_CN→zh_Hans 的映射，缺档则中文环境落英文）
+if grep -q 'zh_Hans' "$KCM_SRC/kcm.cpp"; then
+  pass "effectDisplayName 含 zh_Hans 档（KDE 中文 locale fallback）"
+else
+  fail "effectDisplayName 含 zh_Hans 档" "kcm.cpp locale 链缺 zh_Hans 中间档"
+fi
+# 占位 metadata 双语键：zh_CN 主键（KWin 官方惯例，KPluginMetaData 按 zh_CN
+# 查，系统 /usr/share/kwin/effects 实证 Name[zh_CN]、零个 zh_Hans）+ zh_Hans 兼容
+if grep -q 'Name\[zh_CN\]' "$ROOT/placeholder/kwin6_effect_bmw_random/metadata.json" \
+   && grep -q 'Name\[zh_Hans\]' "$ROOT/placeholder/kwin6_effect_bmw_random/metadata.json"; then
+  pass "占位 metadata 含 zh_CN/zh_Hans 双语言键"
+else
+  fail "占位 metadata 含 zh_CN/zh_Hans 双语言键" "placeholder metadata 缺 zh_CN 或 zh_Hans 键"
+fi
+# 19 特效语言键：唯一落点 inject.py --patch-metadata（install.sh 解压 tar 后调用）；
+# 要求 zh_CN/zh_Hans 双键（KWin 按 zh_CN 查，KCM 手写链两档都查）
+if grep -q 'Name\[zh_CN\]' "$ROOT/lib/inject.py" && grep -q 'Name\[zh_Hans\]' "$ROOT/lib/inject.py"; then
+  pass "inject.py --patch-metadata 含 19 特效双语言键 patch"
+else
+  fail "inject.py --patch-metadata 含 19 特效双语言键 patch" "inject.py 缺 zh_CN 或 zh_Hans 逻辑"
+fi
+# 参数名走 i18n（聚合页参数面板文案，动态 msgid 查我们 catalog）
+if grep -qE 'i18n\([^\"]*modelData\.name' "$KCM_SRC/ui/main.qml"; then
+  pass "参数名走 i18n（动态 msgid）"
+else
+  fail "参数名走 i18n（动态 msgid）" "main.qml 参数名未包 i18n"
+fi
+
+# ================================================================ 12. i18n 中文环境运行时（S10）
+# mo 由前置 install.sh 的 do_install_i18n 装入 ~/.local/share/locale；系统有
+# zh_CN.utf8（locale -a 实测）→ i18n 按 burn-window catalog 取中文译文。
+# 第 4/8 节已断言 LANG=C 英文原文，本节补齐中文侧 —— 双语切换运行时实证。
+echo "=== test_i18n_zh_runtime ==="
+MO_FILE="$HOME/.local/share/locale/zh_CN/LC_MESSAGES/kcm_burnwindow.mo"
+if [ ! -f "$MO_FILE" ]; then
+  skip "zh_CN 运行时双语断言" "mo 未安装: $MO_FILE"
+elif ! locale -a 2>/dev/null | grep -q 'zh_CN.utf8'; then
+  skip "zh_CN 运行时双语断言" "系统无 zh_CN.utf8 locale"
+else
+  ZH_T0="$(date +%s)"
+  # LANG/LC_ALL 覆盖脚本头部的 export LANG=C；其余隔离环境同 launch_and_collect
+  #（prefix 配置/特效，不触真实 kwinrc）
+  env LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 \
+    BURN_WINDOW_CONFIG="$CFG" BURN_WINDOW_EFFECTS="$PREFIX/effects" \
+    BMW_KCM_KWINRC="$PREFIX/kwinrc" \
+    timeout -k 5 20 kcmshell6 kcm_burnwindow >/dev/null 2>&1 &
+  ZH_PID=$!
+  sleep 4
+  kill "$ZH_PID" 2>/dev/null
+  sleep 1
+  kill -9 "$ZH_PID" 2>/dev/null
+  wait "$ZH_PID" 2>/dev/null
+  ZH_OUTPUT="$(journalctl --user -o cat --since "@$ZH_T0" 2>/dev/null)"
+  if printf '%s' "$ZH_OUTPUT" | grep -qE 'BMW_KCM_SWITCH_BADGE=(已启用|未启用)'; then
+    pass "zh_CN 环境徽标取 po 译文（已启用|未启用）"
+  else
+    # 诊断字段：locale 警告（env 是否传入）/ QML 是否加载 / mo 双落点状态 ——
+    # 区分「locale 没生效」与「mo 不在 KLocalizedString 查找路径」两类根因
+    fail "zh_CN 环境徽标取 po 译文" \
+      "实测: $(printf '%s' "$ZH_OUTPUT" | grep -oE 'BMW_KCM_SWITCH_BADGE=[^ ]+' | head -1); locale警告=$(printf '%s' "$ZH_OUTPUT" | grep -c 'Detected locale'); QML_LOADED=$(printf '%s' "$ZH_OUTPUT" | grep -c 'BMW_KCM_QML_LOADED'); mo_user=$([ -f "$HOME/.local/share/locale/zh_CN/LC_MESSAGES/kcm_burnwindow.mo" ] && echo Y || echo N); mo_sys=$([ -f /usr/share/locale/zh_CN/LC_MESSAGES/kcm_burnwindow.mo ] && echo Y || echo N)"
+  fi
+  if printf '%s' "$ZH_OUTPUT" | grep -q 'text=全不选'; then
+    pass "zh_CN 环境全选按钮取 po 译文（text=全不选）"
+  else
+    fail "zh_CN 环境全选按钮取 po 译文" "未匹配 text=全不选"
+  fi
+  # 参数名动态 msgid：Duration 的显示标签在中文环境应为 po 译文「时长」
+  if printf '%s' "$ZH_OUTPUT" | grep -q 'BMW_KCM_PARAM_LABEL kwin6_effect_fire Duration 时长'; then
+    pass "zh_CN 环境参数名取 po 译文（Duration→时长）"
+  else
+    fail "zh_CN 环境参数名取 po 译文" "实测: $(printf '%s' "$ZH_OUTPUT" | grep -oE 'BMW_KCM_PARAM_LABEL kwin6_effect_fire Duration .*' | head -1)"
+  fi
 fi
 
 # ---------------------------------------------------------------- 环境恢复

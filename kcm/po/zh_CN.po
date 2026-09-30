@@ -1,0 +1,194 @@
+# Chinese (Simplified) translations for burn-window KCM.
+# Burn Window 聚合页翻译（翻译域 burn-window）。
+# 原文统一英文（KDE 规范），本文件提供中文译文；测试跑 LANG=C 不依赖本文件。
+msgid ""
+msgstr ""
+"Project-Id-Version: burn-window\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+# ---- 聚合页 UI 文案 ----
+msgid ""
+"Checked effects participate in the random choice for window open/close; "
+"uncheck to exclude. All are checked by default."
+msgstr "勾选的特效参与窗口打开与关闭的随机选择；取消勾选则剔除。默认全部勾选。"
+
+msgid "Random effects: Enabled"
+msgstr "随机特效：已启用"
+
+msgid "Random effects: Disabled"
+msgstr "随机特效：未启用"
+
+msgid "Enabled"
+msgstr "已启用"
+
+msgid "Disabled"
+msgstr "未启用"
+
+msgid "Select All"
+msgstr "全选"
+
+msgid "Deselect All"
+msgstr "全不选"
+
+msgid "Preview this effect"
+msgstr "预览此特效"
+
+msgid "Hide parameters"
+msgstr "收起参数"
+
+msgid "Configure parameters"
+msgstr "设置参数"
+
+# ---- 19 特效参数名（main.xml entry name → 聚合页参数面板标签）----
+msgid "3DNoise"
+msgstr "3D 噪点"
+
+msgid "AdditiveBlending"
+msgstr "叠加混合"
+
+msgid "Amount"
+msgstr "数量"
+
+msgid "AnimationSplit"
+msgstr "动画分割"
+
+msgid "BlurAmount"
+msgstr "模糊量"
+
+msgid "Brightness"
+msgstr "亮度"
+
+msgid "Color"
+msgstr "颜色"
+
+msgid "Color1"
+msgstr "颜色 1"
+
+msgid "Color2"
+msgstr "颜色 2"
+
+msgid "Color3"
+msgstr "颜色 3"
+
+msgid "Details"
+msgstr "细节"
+
+msgid "Duration"
+msgstr "时长"
+
+msgid "EdgeHardness"
+msgstr "边缘硬度"
+
+msgid "EdgeSize"
+msgstr "边缘宽度"
+
+msgid "GlowColor"
+msgstr "辉光颜色"
+
+msgid "Gradient1"
+msgstr "渐变 1"
+
+msgid "Gradient2"
+msgstr "渐变 2"
+
+msgid "Gradient3"
+msgstr "渐变 3"
+
+msgid "Gradient4"
+msgstr "渐变 4"
+
+msgid "Gradient5"
+msgstr "渐变 5"
+
+msgid "HorizontalScale"
+msgstr "水平缩放"
+
+msgid "HorizontalSparklePosition"
+msgstr "水平闪光位置"
+
+msgid "LineColor"
+msgstr "线条颜色"
+
+msgid "LineWidth"
+msgstr "线宽"
+
+msgid "MovementSpeed"
+msgstr "移动速度"
+
+msgid "Noise"
+msgstr "噪点"
+
+msgid "PixelSize"
+msgstr "像素大小"
+
+msgid "Quality"
+msgstr "质量"
+
+msgid "RandomColor"
+msgstr "随机颜色"
+
+msgid "RotateWindow"
+msgstr "旋转窗口"
+
+msgid "RotationSpeed"
+msgstr "旋转速度"
+
+msgid "Saturation"
+msgstr "饱和度"
+
+msgid "Scale"
+msgstr "缩放"
+
+msgid "Shift"
+msgstr "偏移"
+
+msgid "SparkleRotation"
+msgstr "闪光旋转"
+
+msgid "SparkleSize"
+msgstr "闪光大小"
+
+msgid "Speed"
+msgstr "速度"
+
+msgid "SpeedB"
+msgstr "蓝色速度"
+
+msgid "SpeedG"
+msgstr "绿色速度"
+
+msgid "SpeedR"
+msgstr "红色速度"
+
+msgid "SpokeCount"
+msgstr "辐条数量"
+
+msgid "Squish"
+msgstr "挤压"
+
+msgid "StartHue"
+msgstr "起始色相"
+
+msgid "Strength"
+msgstr "强度"
+
+msgid "Tilt"
+msgstr "倾斜"
+
+msgid "Turbulence"
+msgstr "湍流"
+
+msgid "UsePointer"
+msgstr "使用指针位置"
+
+msgid "VerticalScale"
+msgstr "垂直缩放"
+
+msgid "VerticalSparklePosition"
+msgstr "垂直闪光位置"
+
+msgid "Whirling"
+msgstr "旋转缠绕"

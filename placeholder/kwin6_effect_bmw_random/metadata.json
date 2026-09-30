@@ -1,8 +1,12 @@
 {
   "KPackageStructure": "KWin/Effect",
   "KPlugin": {
-    "Name": "随机特效 [Burn-My-Windows]",
-    "Description": "随机播放 Burn-My-Windows 的窗口开/关动画",
+    "Name": "Random Effects [Burn-My-Windows]",
+    "Name[zh_CN]": "随机特效 [Burn-My-Windows]",
+    "Name[zh_Hans]": "随机特效 [Burn-My-Windows]",
+    "Description": "Randomly plays Burn-My-Windows window open/close animations",
+    "Description[zh_CN]": "随机播放 Burn-My-Windows 的窗口开/关动画",
+    "Description[zh_Hans]": "随机播放 Burn-My-Windows 的窗口开/关动画",
     "Icon": "preferences-system-windows-effect",
     "Category": "Window Open/Close Animation",
     "Authors": [

@@ -2,6 +2,7 @@
 
 #include <KConfig>
 #include <KConfigGroup>
+#include <KLocalizedString>
 #include <KPluginFactory>
 
 #include <QCoreApplication>
@@ -163,6 +164,11 @@ QString BurnWindowKCM::effectDisplayName(const QString &effectId) const
 
     const QString locale = QLocale::system().name(); // 例如 zh_CN
     QString name = kplugin.value(QStringLiteral("Name[%1]").arg(locale)).toString();
+    // zh_Hans 档（i18n 2026-09-30）：KDE 中文语言代码惯例是 zh_Hans 而非 zh，
+    // metadata 键统一写 Name[zh_Hans] —— 缺此档则 zh_CN 环境直接落英文 Name。
+    if (name.isEmpty() && locale.startsWith(QLatin1String("zh"))) {
+        name = kplugin.value(QStringLiteral("Name[zh_Hans]")).toString();
+    }
     if (name.isEmpty()) {
         name = kplugin.value(QStringLiteral("Name[%1]").arg(locale.left(2))).toString(); // zh
     }
@@ -420,6 +426,23 @@ void BurnWindowKCM::finishApply(bool ok)
         setNeedsSave(false); // 已持久化且已重新注入生效
     }
 }
+
+// i18n（2026-09-30）：翻译域注册 —— 域值必须等于 KCM 的 pluginId
+// （kcm_burnwindow）。依据：kcmutils KQuickConfigModule::mainUi() 硬编码
+// `d->engine->setTranslationDomain(metaData().pluginId())`（KF6 源码
+// src/quick/kquickconfigmodule.cpp 实测 2026-09-30），QML i18n() 只认
+// pluginId 域 —— catalog 文件名须为 kcm_burnwindow.mo，写别的名字查不到
+// （burn-window.mo 三轮 S10 失败的根因）。此处 C++ 侧 applicationDomain
+// 对齐同一值，kcm.cpp 内的 i18n() 调用与 QML 共用同一 catalog。
+// 无翻译环境（测试 LANG=C / .mo 缺失）时 i18n() fallback 返回英文原文。
+// C++ 顶层作用域不允许表达式语句（实测 434 行编译报错），用静态初始化
+// lambda：so 加载即执行，早于工厂构造与 QML 加载。
+namespace {
+const bool g_burnWindowI18nDomain = [] {
+    KLocalizedString::setApplicationDomain("kcm_burnwindow");
+    return true;
+}();
+} // namespace
 
 K_PLUGIN_FACTORY_WITH_JSON(BurnWindowKCMFactory, "kcm_burnwindow.json",
                             registerPlugin<BurnWindowKCM>();)

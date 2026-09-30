@@ -144,7 +144,7 @@ KCMUtils.SimpleKCM {
         QQC2.Label {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
-            text: i18n("勾选的特效参与窗口打开与关闭的随机选择；取消勾选则剔除。默认全部勾选。")
+            text: i18n("Checked effects participate in the random choice for window open/close; uncheck to exclude. All are checked by default.")
         }
 
         RowLayout {
@@ -166,9 +166,9 @@ KCMUtils.SimpleKCM {
             // 使无 GUI 环境的探针断言不依赖翻译环境
             QQC2.Label {
                 font.bold: true
-                text: kcm.randomLoaded ? "随机特效：已启用" : "随机特效：未启用"
+                text: kcm.randomLoaded ? i18n("Random effects: Enabled") : i18n("Random effects: Disabled")
                 Component.onCompleted: {
-                    console.log("BMW_KCM_SWITCH_BADGE=" + (kcm.randomLoaded ? "已启用" : "未启用"))
+                    console.log("BMW_KCM_SWITCH_BADGE=" + (kcm.randomLoaded ? i18n("Enabled") : i18n("Disabled")))
                 }
             }
 
@@ -181,7 +181,7 @@ KCMUtils.SimpleKCM {
             // （见下方 CheckBox 注释），不是这里显式去改 19 个勾选框。
             QQC2.Button {
                 id: selectAllButton
-                text: badgeRow.allSelected ? i18n("全不选") : i18n("全选")
+                text: badgeRow.allSelected ? i18n("Deselect All") : i18n("Select All")
                 onClicked: {
                     var target = !badgeRow.allSelected
                     for (var i = 0; i < kcm.pool.length; i++) {
@@ -247,7 +247,7 @@ KCMUtils.SimpleKCM {
                         id: previewButton
                         icon.name: "media-playback-start"
                         QQC2.ToolTip.visible: hovered
-                        QQC2.ToolTip.text: i18n("预览此特效")
+                        QQC2.ToolTip.text: i18n("Preview this effect")
                         QQC2.ToolTip.delay: 500
                         onClicked: {
                             previewWindow.title = "BMW_PREVIEW:" + effectRoot.modelData.effectId
@@ -272,7 +272,7 @@ KCMUtils.SimpleKCM {
                         // —— journal 实测原文见 main.qml:118。必须用 ToolTip attached
                         // property，KDE 先例 breeze/ItemDelegate.qml:32-33 同款写法。
                         icon.name: "settings-configure"
-                        readonly property string tip: paramsColumn.visible ? i18n("收起参数") : i18n("设置参数")
+                        readonly property string tip: paramsColumn.visible ? i18n("Hide parameters") : i18n("Configure parameters")
                         QQC2.ToolTip.visible: hovered
                         QQC2.ToolTip.text: gearButton.tip
                         QQC2.ToolTip.delay: 500
@@ -313,7 +313,7 @@ KCMUtils.SimpleKCM {
                             QQC2.Label {
                                 Layout.preferredWidth: 160
                                 elide: Text.ElideRight
-                                text: paramRow.modelData.name
+                                text: i18n(paramRow.modelData.name)
                             }
 
                             // 值域降级依据（P1-5）：spec 4.3 要求 min/max 来自
@@ -383,6 +383,8 @@ KCMUtils.SimpleKCM {
                             Component.onCompleted: {
                                 console.log("BMW_KCM_PARAM_WIDGET " + effectRoot.modelData.effectId + " " + paramRow.modelData.name + " " + paramRow.modelData.type)
                                 console.log("BMW_KCM_PARAM_EDIT " + effectRoot.modelData.effectId + " " + paramRow.modelData.name + "=" + paramRow.modelData.value)
+                                // i18n 标签探针：显示文本经 i18n 后的值（LANG=C=英文原文，zh=po 译文）
+                                console.log("BMW_KCM_PARAM_LABEL " + effectRoot.modelData.effectId + " " + paramRow.modelData.name + " " + i18n(paramRow.modelData.name))
                             }
                         }
                     }

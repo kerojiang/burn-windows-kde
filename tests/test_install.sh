@@ -103,7 +103,14 @@ import json, sys
 m = json.load(open(sys.argv[1], encoding="utf-8"))
 assert m["KPackageStructure"] == "KWin/Effect"
 assert m["KPlugin"]["Id"] == "kwin6_effect_bmw_random"
-assert m["KPlugin"]["Name"] == "随机特效 [Burn-My-Windows]"
+# i18n（2026-09-30）：Name/Description 原文英文（KDE 规范），中文走语言键；
+# zh_CN 主键（KWin 官方惯例，KPluginMetaData 按 zh_CN 查）+ zh_Hans 兼容键
+assert m["KPlugin"]["Name"] == "Random Effects [Burn-My-Windows]"
+assert m["KPlugin"]["Name[zh_CN]"] == "随机特效 [Burn-My-Windows]"
+assert m["KPlugin"]["Name[zh_Hans]"] == "随机特效 [Burn-My-Windows]"
+assert m["KPlugin"]["Description"] == "Randomly plays Burn-My-Windows window open/close animations"
+assert m["KPlugin"]["Description[zh_CN]"] == "随机播放 Burn-My-Windows 的窗口开/关动画"
+assert m["KPlugin"]["Description[zh_Hans]"] == "随机播放 Burn-My-Windows 的窗口开/关动画"
 assert m["KPlugin"]["EnabledByDefault"] is False
 assert m["X-KWin-Exclusive-Category"] == "toplevel-open-close-animation"
 assert m["X-KDE-ConfigModule"] == "kcm_burnwindow"
@@ -366,7 +373,14 @@ if [ -f "$PH/metadata.json" ]; then
 import json, sys
 m = json.load(open(sys.argv[1], encoding="utf-8"))
 assert m["KPlugin"]["Id"] == "kwin6_effect_bmw_random"
-assert m["KPlugin"]["Name"] == "随机特效 [Burn-My-Windows]"
+# i18n（2026-09-30）：部署产物与模板同样要求双语键（cp 部署必须带键）；
+# zh_CN 主键（KWin 官方惯例）+ zh_Hans 兼容键
+assert m["KPlugin"]["Name"] == "Random Effects [Burn-My-Windows]"
+assert m["KPlugin"]["Name[zh_CN]"] == "随机特效 [Burn-My-Windows]"
+assert m["KPlugin"]["Name[zh_Hans]"] == "随机特效 [Burn-My-Windows]"
+assert m["KPlugin"]["Description"] == "Randomly plays Burn-My-Windows window open/close animations"
+assert m["KPlugin"]["Description[zh_CN]"] == "随机播放 Burn-My-Windows 的窗口开/关动画"
+assert m["KPlugin"]["Description[zh_Hans]"] == "随机播放 Burn-My-Windows 的窗口开/关动画"
 assert m["KPlugin"]["EnabledByDefault"] is False
 assert m["X-KDE-ConfigModule"] == "kcm_burnwindow"
 PY
