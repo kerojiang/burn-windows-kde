@@ -8,8 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const src = readFileSync(new URL("../lib/arbiter.js", import.meta.url), "utf8");
-const { bmwPickWinner, bmwShouldPlay, bmwCleanup } = new Function(
-  `${src}\n;return { bmwPickWinner, bmwShouldPlay, bmwCleanup };`,
+const { bmwPickWinner, bmwShouldPlay, bmwCleanup, bmwPreviewTarget } = new Function(
+  `${src}\n;return { bmwPickWinner, bmwShouldPlay, bmwCleanup, bmwPreviewTarget };`,
 )();
 
 // 构造一个模拟 KWin window 对象：data/setData 存于普通 Map。
@@ -134,4 +134,68 @@ test("兼容 window.data 未设置时返回 undefined 与 null 两种情况", ()
     bmwShouldPlay(wNull, OPEN_ROLE, "a", ["a", "b"], [], sequence(0.0)),
     true,
   );
+});
+
+// ---- 预览协议（BMW_PREVIEW 标题 → 强制指定 winner）----
+// spec §8「动画预览」：KWin 无 playEffect API（org.kde.kwin.Effects.xml:3-42
+// 仅 9 方法、全源码 0 命中、qdbus6 实测一致），只能靠真实窗口开/关事件 +
+// 窗口标题携带目标 id。协议格式 BMW_PREVIEW:<effectId>，KCM 与 e2e 按此拼。
+
+test("预览协议：caption=BMW_PREVIEW:kwin6_effect_fire 时 fire 必当选（即使 rng 指向别处）", () => {
+  const w = fakeWindow();
+  w.caption = "BMW_PREVIEW:kwin6_effect_fire";
+  // rng 恒返回 0.99 → 无协议时必选末项(doom)，此处必须被协议覆盖
+  assert.equal(
+    bmwShouldPlay(
+      w,
+      OPEN_ROLE,
+      "kwin6_effect_fire",
+      ["kwin6_effect_fire", "kwin6_effect_doom"],
+      [],
+      () => 0.99,
+    ),
+    true,
+  );
+  assert.equal(w.data(OPEN_ROLE), "kwin6_effect_fire");
+});
+
+test("预览协议：目标不在 pool 内 → 视为非法，回落随机", () => {
+  const w = fakeWindow();
+  w.caption = "BMW_PREVIEW:kwin6_effect_not_in_pool";
+  assert.equal(bmwPreviewTarget(w.caption, ["kwin6_effect_fire"]), null);
+});
+
+test("预览协议：非 BMW_PREVIEW 前缀 → null（用户窗口不误触发）", () => {
+  assert.equal(bmwPreviewTarget("kwin6_effect_fire", ["kwin6_effect_fire"]), null);
+  assert.equal(bmwPreviewTarget(null, ["kwin6_effect_fire"]), null);
+});
+
+test("预览协议：目标在 blacklist 内仍强制播放（绕过 eligible 校验）", () => {
+  // 调研结论：arbiter.js:47 的 eligible.indexOf(winner) 复用校验会把出池
+  // winner 踢回随机，预览一个已剔除的特效必须绕过它
+  const w = fakeWindow();
+  w.caption = "BMW_PREVIEW:kwin6_effect_fire";
+  assert.equal(
+    bmwShouldPlay(
+      w,
+      OPEN_ROLE,
+      "kwin6_effect_fire",
+      ["kwin6_effect_fire"],
+      ["kwin6_effect_fire"],
+      () => 0.5,
+    ),
+    true,
+  );
+});
+
+test("预览协议：同 caption 对 OPEN/CLOSE 两个 role 均命中", () => {
+  // 两个 role 各自调用 bmwShouldPlay，只处理一个会导致只播一段动画
+  const w = fakeWindow();
+  w.caption = "BMW_PREVIEW:kwin6_effect_fire";
+  bmwShouldPlay(w, OPEN_ROLE, "kwin6_effect_fire", ["kwin6_effect_fire", "a"], [], () => 0.99);
+  assert.equal(
+    bmwShouldPlay(w, CLOSE_ROLE, "kwin6_effect_fire", ["kwin6_effect_fire", "a"], [], () => 0.99),
+    true,
+  );
+  assert.equal(w.data(CLOSE_ROLE), "kwin6_effect_fire");
 });
