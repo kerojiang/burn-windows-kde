@@ -398,6 +398,82 @@ else
   fail "黑名单恢复已挂到 trap EXIT" "未在 $0 找到含 restore_blacklist 的 trap EXIT 行"
 fi
 
+# ================================================================ 7. 预览链路（B plan Task 4）
+# 唯一能判定 caption 时序的测试（plan Review Focus #5）：开一个
+# title = "BMW_PREVIEW:<id>" 的真实窗口，若 caption 晚于 windowAdded 到达，
+# arbiter 走随机 → 播的不是目标 id → 断言 FAIL。
+# target 与轮数可用环境变量覆盖：BMW_E2E_PREVIEW_TARGET 设为池外 id 时，
+# bmwPreviewTarget 返回 null → 回落随机 → 用例必 FAIL，用于证明断言非空转
+#（TDD 要求先见其失败）。默认 kwin6_effect_fire / 20 轮 —— 20 轮是必须的：
+# 协议失效时单轮有 1/19 概率恰好抽中目标，单轮会假阳性通过。
+echo "=== test_preview_plays_target_only ==="
+PV_TARGET="${BMW_E2E_PREVIEW_TARGET:-kwin6_effect_fire}"
+PV_ROUNDS="${BMW_E2E_PREVIEW_ROUNDS:-20}"
+
+# 开窗工具链（Ruling：plan 原假设 kdialog —— 本机未安装，kwrite/konsole 也无
+# --title 参数 → 改用 python3 + PyGObject GTK3）。GTK 版的 title 在
+# Gtk.Window 构造时设定（先于 show），最小化 caption 晚于 windowAdded 到达的
+# 可能。2026-09-30 单轮探针实测：该窗口 title 能被 KWin 读到且协议命中 ——
+# 时间窗内 `BMW_PLAY` = 2 × kwin6_effect_fire（open/close 各一）。
+PV_TOOL=""
+if command -v kdialog >/dev/null 2>&1; then
+  PV_TOOL=kdialog
+elif command -v python3 >/dev/null 2>&1 \
+     && python3 -c "import gi; gi.require_version('Gtk','3.0')" 2>/dev/null; then
+  PV_TOOL=gtk
+  cat > "$TMP/pv_win.py" <<'PYEOF'
+import sys, gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, GLib
+# title 在构造时给出（先于 show_all），让 Wayland set_title 先于 map
+win = Gtk.Window(title=sys.argv[1])
+win.set_default_size(400, 300)
+win.show_all()
+GLib.timeout_add(4000, Gtk.main_quit)
+Gtk.main()
+PYEOF
+fi
+
+preview_round() { # $1=tag $2=窗口标题（协议串）
+  local tag="$1" title="$2" kpid t0 t1 t2
+  t0="$(date +%H:%M:%S.%3N)"
+  # 普通 toplevel 能进仲裁：main.js:253 判定 `normalWindow || window.dialog`，
+  # classBlacklist（:115-121）只挡 ksmserver/ksplashqml 等，nameBlacklist
+  #（:229）按 caption 精确匹配不含 BMW_PREVIEW 前缀
+  if [ "$PV_TOOL" = "kdialog" ]; then
+    kdialog --title "$title" --msgbox "preview" >/dev/null 2>&1 & kpid=$!
+  else
+    python3 "$TMP/pv_win.py" "$title" >/dev/null 2>&1 & kpid=$!
+  fi
+  sleep 4
+  t1="$(date +%H:%M:%S.%3N)"
+  kill -TERM "$kpid" 2>/dev/null
+  sleep 3
+  t2="$(date +%H:%M:%S.%3N)"
+  kill -9 "$kpid" 2>/dev/null
+  wait "$kpid" 2>/dev/null
+  journal_window "$t0" "$t1" "$TMP/$tag.open.raw"
+  journal_window "$t1" "$t2" "$TMP/$tag.close.raw"
+  finalize_round "$tag"
+  return 0
+}
+
+if [ -n "$PV_TOOL" ]; then
+  printf '  预览轮次(%s via %s × %s): ' "$PV_TARGET" "$PV_TOOL" "$PV_ROUNDS"
+  for i in $(seq -w 1 "$PV_ROUNDS"); do
+    preview_round "t_pv_$i" "BMW_PREVIEW:$PV_TARGET"
+    printf '.'
+  done
+  printf '\n'
+  PV_ALL="$(collect_all t_pv)"
+  PLAY_N="$(printf '%s\n' "$PV_ALL" | grep -c . || true)"
+  TARGET_N="$(printf '%s\n' "$PV_ALL" | grep -cx "$PV_TARGET" || true)"
+  assert_true "$PLAY_N -ge 1" "预览窗口触发了动画（捕获 $PLAY_N 项去重）"
+  assert_eq "$TARGET_N" "$PLAY_N" "每一段播放都是目标特效（无随机泄漏）"
+else
+  skip "预览链路（caption 时序判定）" "kdialog 与 python3+GTK 均不可用"
+fi
+
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [ "$FAIL" -eq 0 ] || exit 1
