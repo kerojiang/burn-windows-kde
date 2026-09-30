@@ -1,0 +1,29 @@
+{
+  "KPackageStructure": "KWin/Effect",
+  "KPlugin": {
+    "Name": "Random Effects [Burn-My-Windows]",
+    "Name[zh_CN]": "随机特效 [Burn-My-Windows]",
+    "Name[zh_Hans]": "随机特效 [Burn-My-Windows]",
+    "Description": "Randomly plays Burn-My-Windows window open/close animations",
+    "Description[zh_CN]": "随机播放 Burn-My-Windows 的窗口开/关动画",
+    "Description[zh_Hans]": "随机播放 Burn-My-Windows 的窗口开/关动画",
+    "Icon": "preferences-system-windows-effect",
+    "Category": "Window Open/Close Animation",
+    "Authors": [
+      { "Name": "Burn Window 包装层" }
+    ],
+    "Id": "kwin6_effect_bmw_random",
+    "License": "GPLv3",
+    "Version": "1.0",
+    "EnabledByDefault": false,
+    "ServiceTypes": [
+      "KWin/Effect"
+    ]
+  },
+  "X-KDE-ConfigModule": "kcm_burnwindow",
+  "X-KDE-Ordering": "61",
+  "X-KDE-PluginKeyword": "kwin6_effect_bmw_random",
+  "X-KWin-Exclusive-Category": "toplevel-open-close-animation",
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}

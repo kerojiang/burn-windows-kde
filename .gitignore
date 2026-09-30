@@ -1,11 +1,41 @@
-# C++ objects and libs
-*.slo
-*.lo
+# 构建产物
+build/
+*.so
 *.o
 *.a
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+.ninja_*
+*.ninja
+
+# 上游克隆（由 install.sh 按需拉取，不入库）
+upstream/
+Burn-My-Windows/
+
+# 临时与备份
+*.orig
+*.bak
+*.tmp
+__pycache__/
+
+# 编辑器/系统
+.idea/
+.vscode/
+.DS_Store
+
+# SDD 工作区（ledger/brief/日志，git-ignored）
+.superpowers/
+
+# ---------------------------------------------------------------- 以下来自
+# GitHub 的 C++/Qt 模板（合并 Initial commit 时保留的独有规则），补充
+# KCM（Qt6/KF6）本地构建产物的忽略项
+*.slo
+*.lo
 *.la
 *.lai
-*.so
 *.so.*
 *.dll
 *.dylib
@@ -29,7 +59,6 @@ ui_*.h
 *.jsc
 Makefile*
 *build-*
-build/
 *.qm
 *.prl
 *.qmlls.ini
@@ -47,10 +76,7 @@ target_wrapper.*
 # QtCreator CMake
 CMakeLists.txt.user*
 
-# QtCreator 4.8< compilation database
-compile_commands.json
-
-# QtCreator local machine specific files for imported projects
+# QtCreator local machine specific files from imported projects
 *creator.user*
 
 *_qmlcache.qrc

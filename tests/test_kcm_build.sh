@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# KCM 构建/加载/apply 诊断测试 —— bash tests/test_kcm_build.sh
+#
+# 用例 2、3 需要把 .so 装入系统路径（唯一需提权的步骤）。凭据通过 sudo 凭证缓存
+# 提供（跑本脚本前由运行者执行 sudo -v），缓存不可用时标记 SKIP 而非假阴性通过。
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KCM_SRC="$ROOT/kcm"
+KCM_DEST="/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so"
+KWIN_INTERFACE="org.kde.kwin.Effects"
+
+PASS=0
+FAIL=0
+SKIP=0
+OUTPUT=""
+RC=0
+BUILD=""
+PREFIX=""
+# ---- 保护测试开始前已存在的系统 KCM（M-2）----
+# 旧版：进入时无条件 install 覆盖、退出时无条件 rm —— 用户经 install.sh 正式
+# 安装的 KCM 会在跑完测试后从系统设置消失。修复：进入时先快照，退出时还原。
+KCM_BACKUP_DIR=""     # 进入测试时 KCM_DEST 的内容快照
+KCM_WAS_PRESENT=0     # 进入测试时目标是否已存在
+KCM_SNAPSHOT_DONE=0   # 快照是否已执行 —— 未快照时 restore 必须不动目标
+KCM_RESTORED=0        # 恢复动作只执行一次（显式路径与 trap 兜底共用）
+PRESET_FILE=""        # 用例 0 预置的占位 KCM（断言"原样保留"的比对源）
+KCM_INITIAL_PRESENT=0 # 预置动作之前的初始状态（断言"净影响为零"用）
+
+setup() {
+  BUILD="$(mktemp -d /tmp/bmw-kcm-build.XXXXXX)"
+  PREFIX="$(mktemp -d /tmp/bmw-kcm-prefix.XXXXXX)"
+}
+
+teardown() {
+  [ -n "${BUILD:-}" ] && rm -rf "$BUILD"
+  [ -n "${PREFIX:-}" ] && rm -rf "$PREFIX"
+  [ -n "${KCM_BACKUP_DIR:-}" ] && rm -rf "$KCM_BACKUP_DIR"
+}
+
+run() {
+  set +e
+  OUTPUT="$("$@" 2>&1)"
+  RC=$?
+  # 恢复脚本原状态（原为 set -u，无 errexit）。误写成 set -e 会让 run 之后
+  # 任何返回非 0 的裸命令直接静默退出脚本 —— 此前 test_kcm_build.sh 因此
+  # 在 `wait $KPID`（子进程已被 KILL，返回 137）处中断。
+  set +e
+}
+
+fail() {
+  FAIL=$((FAIL + 1))
+  printf '  ✖ %s\n    %s\n    退出码=%s\n    输出: %s\n' \
+    "$1" "$2" "$RC" "$(printf '%s' "$OUTPUT" | tail -4 | tr '\n' '|')"
+}
+pass() { PASS=$((PASS + 1)); printf '  ✔ %s\n' "$1"; }
+skip() { SKIP=$((SKIP + 1)); printf '  ⊘ %s —— %s\n' "$1" "$2"; }
+
+assert_exists() {
+  if [ -e "$1" ]; then pass "$2"; else fail "$2" "应存在: $1"; fi
+}
+assert_contains() {
+  case "$OUTPUT" in
+    *"$1"*) pass "$2" ;;
+    *) fail "$2" "应包含 [$1]" ;;
+  esac
+}
+assert_exit_code_zero() {
+  if [ "$RC" -eq 0 ]; then pass "$1"; else fail "$1" "退出码应为 0，实际 $RC"; fi
+}
+assert_eq() { # assert_eq <actual> <expected> <label>
+  if [ "$1" = "$2" ]; then pass "$3"; else fail "$3" "期望 [$2] 实际 [$1]"; fi
+}
+
+sudo_available() { sudo -n true 2>/dev/null || [ -n "${SUDO_PASSWORD:-}" ]; }
+
+# 提权通道：优先用已有凭证缓存；缓存对子脚本无效时（本环境实测
+# `sudo -n` 仅对与建缓存进程同父进程的调用生效，bash 子脚本返回 rc=1），
+# 回退到运行者通过 SUDO_PASSWORD 注入的凭据 —— 凭据只经环境变量传入，
+# 不硬编码进测试代码；两者皆无时调用方标记 SKIP。
+sudo_cmd() {
+  if sudo -n true 2>/dev/null; then
+    sudo "$@"
+  elif [ -n "${SUDO_PASSWORD:-}" ]; then
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S "$@"
+  else
+    echo "sudo 凭据不可用（缓存未被子脚本继承，且未提供 SUDO_PASSWORD）" >&2
+    return 1
+  fi
+}
+
+# ---- 系统 KCM 的快照与还原（M-2）----
+# 进入测试时对 KCM_DEST 做一次快照；退出时原样还原。这样"本次为新装"才删除，
+# "进入时已存在"（用户正式安装 / 用例 0 的占位）一律还原 —— 跑测试不再让
+# 用户已装的 KCM 从系统设置里消失。
+snapshot_kcm() {
+  KCM_SNAPSHOT_DONE=1
+  [ "${KCM_WAS_PRESENT:-0}" -eq 1 ] && return 0
+  [ -e "$KCM_DEST" ] || return 0
+  KCM_BACKUP_DIR="$(mktemp -d /tmp/bmw-kcm-snap.XXXXXX)"
+  if cp "$KCM_DEST" "$KCM_BACKUP_DIR/kcm_burnwindow.so" 2>/dev/null \
+     && [ -s "$KCM_BACKUP_DIR/kcm_burnwindow.so" ]; then
+    KCM_WAS_PRESENT=1
+  else
+    # 快照失败时不冒充"已备份"——宁可退出时不动目标，也不删掉无法还原的文件
+    echo "  快照失败，退出时不删除 $KCM_DEST" >&2
+    rm -rf "$KCM_BACKUP_DIR"
+    KCM_BACKUP_DIR=""
+    KCM_WAS_PRESENT=1
+  fi
+}
+
+restore_kcm() {
+  [ "${KCM_RESTORED:-0}" -eq 1 ] && return 0
+  # 从未快照 = 还没走到"记录初始状态"那一步（脚本极早失败）。
+  # 此时无法区分"目标是用户正式安装"还是"本次新装"，一律不动 ——
+  # 删错的代价（用户正式安装消失）远大于留一个占位文件。
+  [ "${KCM_SNAPSHOT_DONE:-0}" -eq 1 ] || return 0
+  if ! sudo_available; then
+    echo "  sudo 凭证不可用，保留 $KCM_DEST（快照: ${KCM_WAS_PRESENT:-0}）"
+    return 0
+  fi
+  KCM_RESTORED=1
+  if [ "${KCM_WAS_PRESENT:-0}" -eq 0 ]; then
+    # 快照明确记录"进入时目标不存在" = 本次为新装，删除才安全
+    sudo_cmd rm -f "$KCM_DEST" && echo "  已删除 $KCM_DEST"
+  elif [ -f "$KCM_BACKUP_DIR/kcm_burnwindow.so" ]; then
+    if sudo_cmd install -D -m 0644 "$KCM_BACKUP_DIR/kcm_burnwindow.so" "$KCM_DEST"; then
+      echo "  已还原测试开始前的 KCM: $KCM_DEST"
+    else
+      echo "  还原失败: $KCM_DEST（备份仍在 $KCM_BACKUP_DIR）" >&2
+      KCM_RESTORED=0
+    fi
+  else
+    # 进入时存在但快照没拿到内容 —— 无法还原，只能原样保留，绝不删除
+    echo "  快照内容缺失，保留 $KCM_DEST 不动" >&2
+  fi
+}
+
+# 占位文件是本测试自己放的，最终必须清掉，让系统回到 KCM_INITIAL_PRESENT
+# 描述的状态；若初始就已存在（用户正式安装）则 PRESET_FILE 为空，本函数不动。
+KCM_PRESET_CLEANED=0
+cleanup_preset() {
+  [ "${KCM_PRESET_CLEANED:-0}" -eq 1 ] && return 0
+  [ -n "${PRESET_FILE:-}" ] || return 0
+  KCM_PRESET_CLEANED=1
+  sudo_available || return 0
+  sudo_cmd rm -f "$KCM_DEST" >/dev/null 2>&1 || true
+}
+
+# 提前 exit 的路径（构建失败/提权失败）也必须还原，否则占位文件会留在系统路径
+trap 'restore_kcm; cleanup_preset' EXIT
+
+setup   # 占位文件落在 BUILD 临时目录里，必须先于预置
+
+# ============================================================ 0. 保护已装产物
+# 放在构建之前：构建失败走 exit 1 时，快照必须已经存在，否则 restore 会把
+# "从未快照"误判成"本次新装"并删掉用户正式安装的 KCM。
+echo "=== test_preexisting_kcm_is_preserved ==="
+KCM_INITIAL_PRESENT=0
+[ -e "$KCM_DEST" ] && KCM_INITIAL_PRESENT=1
+if sudo_available; then
+  if [ "$KCM_INITIAL_PRESENT" -eq 1 ]; then
+    echo "  系统路径已有 KCM（视为用户正式安装），不预置，直接以其为保护对象"
+  else
+    PRESET_FILE="$BUILD/preset-kcm.so"
+    printf 'BMW_KCM_PRESET_STANDBY' > "$PRESET_FILE"
+    run sudo_cmd install -D -m 0644 "$PRESET_FILE" "$KCM_DEST"
+    if [ "$RC" -eq 0 ]; then
+      pass "已预置占位 KCM（模拟用户正式安装）"
+    else
+      fail "已预置占位 KCM（模拟用户正式安装）" "退出码 $RC"
+      PRESET_FILE=""
+    fi
+  fi
+else
+  skip "预置占位 KCM" "sudo 凭据不可用"
+fi
+# 必须在预置之后快照：快照内容就是"退出时必须还原成的样子"
+snapshot_kcm
+
+# ============================================================ 1. 构建
+echo "=== test_build_produces_so ==="
+run cmake -S "$KCM_SRC" -B "$BUILD" -G Ninja
+assert_exit_code_zero "CMake configure"
+run cmake --build "$BUILD"
+assert_exit_code_zero "CMake build"
+assert_exists "$BUILD/bin/plasma/kcms/systemsettings/kcm_burnwindow.so" "产物 .so 已生成"
+SO="$BUILD/bin/plasma/kcms/systemsettings/kcm_burnwindow.so"
+
+# ============================================================ 2. 安装并被 systemsettings 发现
+echo "=== test_kcmshell6_loads_by_name ==="
+if [ ! -f "$SO" ]; then
+  skip "系统级安装与按名加载" "构建产物缺失，前置用例已失败"
+elif ! sudo_available; then
+  skip "系统级安装与按名加载" "sudo 凭证缓存不可用（先执行 sudo -v），按 plan 要求标记 SKIP 而非假阴性通过"
+else
+  run sudo_cmd install -D -m 0644 "$SO" "$KCM_DEST"
+  assert_exit_code_zero "安装到系统路径"
+
+  run systemsettings --list
+  assert_exit_code_zero "systemsettings --list 退出码 0"
+  assert_contains "kcm_burnwindow" "不带 QT_PLUGIN_PATH 也能被发现"
+
+  # 实际 dlopen：启动 kcmshell6 后检查 /proc/<pid>/maps
+  kcmshell6 kcm_burnwindow >/dev/null 2>&1 &
+  KPID=$!
+  sleep 4
+  if grep -q "kcm_burnwindow.so" "/proc/$KPID/maps" 2>/dev/null; then
+    pass "kcmshell6 按名加载并 dlopen 到系统路径"
+  else
+    fail "kcmshell6 按名加载并 dlopen 到系统路径" "/proc/$KPID/maps 未见 kcm_burnwindow.so"
+  fi
+  # kcmshell6 若不响应 TERM，裸 wait 会无限等待 —— 先 TERM，再兜底 KILL
+  kill "$KPID" 2>/dev/null
+  sleep 1
+  kill -9 "$KPID" 2>/dev/null
+  wait "$KPID" 2>/dev/null
+fi
+
+# ============================================================ 3. apply 失败时把 stderr 报出来
+echo "=== test_apply_failure_reports_error ==="
+if [ ! -f "$KCM_DEST" ]; then
+  skip "apply 失败诊断输出" "KCM 未安装到系统路径（前置用例 SKIP/失败）"
+elif ! grep -qa "kcm_burnwindow" "$KCM_DEST" 2>/dev/null; then
+  # 目标文件不是本项目产物（用例 2 被 skip，系统路径上仍是用例 0 的占位文件）
+  skip "apply 失败诊断输出" "系统路径 KCM 非本次构建产物"
+elif ! command -v kcmshell6 >/dev/null 2>&1; then
+  skip "apply 失败诊断输出" "kcmshell6 不可用"
+else
+  cat > "$PREFIX/burn-window-randomrc" <<CFG
+[General]
+Pool=kwin6_effect_fire
+Blacklist=
+ApplyScript=/bin/false
+CFG
+  # 诊断模式：KCM 构造后自动执行一次 apply，把结果写到 stderr 后退出
+  # -k 5：TERM 后 5 秒仍不退出则 KILL，避免 GNU timeout 默认的无限等待
+  run env BURN_WINDOW_CONFIG="$PREFIX/burn-window-randomrc" \
+          BMW_KCM_DIAG_APPLY=1 \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "诊断模式正常退出（未挂起）"
+  assert_contains "BMW_KCM_DIAG_APPLY_OUTPUT=" "诊断输出已写出"
+  # RF5「按钮状态恢复」（审查 M-6）：finishApply 是 applyRunning 的唯一收口，
+  # 走不到它就会让状态停在 running。用诊断输出代替 GUI 操作。
+  assert_contains "BMW_KCM_DIAG_APPLY_RUNNING=false" "apply 结束后 applyRunning 已归零（按钮状态恢复）"
+  assert_contains "BMW_KCM_DIAG_APPLY_NEEDSSAVE=false" "apply 结束后 needsSave 回到基线（框架按钮可用性的驱动量已复位）"
+  # applyOutput 必须非空：/bin/false 退出码 1，KCM 应给出失败描述
+  if printf '%s' "$OUTPUT" | grep -q "BMW_KCM_DIAG_APPLY_OUTPUT=.\{1,\}"; then
+    pass "apply 失败信息非空（/bin/false 退出码 1 被上报）"
+  else
+    fail "apply 失败信息非空（/bin/false 退出码 1 被上报）" "applyOutput 为空"
+  fi
+fi
+
+# ============================================================ 4. 聚合模型诊断（Task 6）
+# DIAG 模式 BMW_KCM_DIAG_POOL：构造后输出 pool 模型 JSON / randomLoaded，
+# 演示 toggle 反转映射与 setParam 脏区，随后退出（纯内存演示，不 save 落盘）。
+diag_guard() {
+  # 返回 0 = 可以跑诊断；否则打印 skip 原因并返回 1
+  if [ ! -f "$KCM_DEST" ] || ! grep -qa "kcm_burnwindow" "$KCM_DEST" 2>/dev/null; then
+    skip "$1" "KCM 非本次构建产物（前置用例失败/SKIP）"
+    return 1
+  fi
+  if ! command -v kcmshell6 >/dev/null 2>&1; then
+    skip "$1" "kcmshell6 不可用"
+    return 1
+  fi
+  return 0
+}
+
+echo "=== test_pool_model_participating_and_params ==="
+if diag_guard "pool 模型诊断"; then
+  cat > "$PREFIX/diag-randomrc" <<CFG
+[General]
+Pool=kwin6_effect_fire,kwin6_effect_glitch
+Blacklist=
+ApplyScript=/bin/false
+CFG
+  run env BURN_WINDOW_CONFIG="$PREFIX/diag-randomrc" \
+          BMW_KCM_DIAG_POOL=1 \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "pool 诊断正常退出（未挂起/未崩溃）"
+  assert_contains "BMW_KCM_POOL_MODEL=" "POOL_MODEL 诊断已输出"
+  MODEL="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_POOL_MODEL=//p' | head -1)"
+  if printf '%s' "$MODEL" | python3 -c '
+import json, sys
+pool = json.load(sys.stdin)
+assert len(pool) == 2, f"pool 长度 {len(pool)}"
+fire = next(p for p in pool if p["effectId"] == "kwin6_effect_fire")
+assert fire["participating"] is True, "黑名单为空时默认全参与（D3）"
+names = {p["name"]: p for p in fire["params"]}
+assert "Duration" in names, f"fire params {list(names)}"
+assert names["Duration"]["type"] == "UInt"
+assert names["Duration"]["default"] == "1500"
+glitch = next(p for p in pool if p["effectId"] == "kwin6_effect_glitch")
+gnames = {p["name"] for p in glitch["params"]}
+assert "Strength" in gnames, f"glitch params {sorted(gnames)}"
+' 2>/dev/null; then
+    pass "pool 模型含 participating + params（fire Duration UInt/1500、glitch Strength）"
+  else
+    fail "pool 模型含 participating + params" "JSON 结构不符: ${MODEL:0:200}"
+  fi
+  assert_contains "BMW_KCM_RANDOM_LOADED=" "randomLoaded 诊断已输出"
+  if printf '%s' "$OUTPUT" | grep -qE 'BMW_KCM_RANDOM_LOADED=(true|false)$'; then
+    pass "randomLoaded 值域为 true|false"
+  else
+    fail "randomLoaded 值域为 true|false" "输出行值域外"
+  fi
+fi
+
+echo "=== test_toggle_participating_maps_to_blacklist ==="
+if diag_guard "参与语义映射诊断"; then
+  # 复用上一段的 OUTPUT（同一次 run 已含 toggle 演示探针）
+  TOG="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_DIAG_BLACKLIST_TOGGLED=//p' | head -1)"
+  assert_eq "$TOG" "kwin6_effect_fire" "participating=false → 加入黑名单（D3 反转映射）"
+  # RESTORED 的期望值恰为空串：必须先证明该行存在，否则"提取不到"与
+  # "提取到空值"不可区分，断言会假通过
+  assert_contains "BMW_KCM_DIAG_BLACKLIST_RESTORED=" "RESTORED 探针行存在"
+  RES="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_DIAG_BLACKLIST_RESTORED=//p' | head -1)"
+  assert_eq "$RES" "" "participating=true → 移出黑名单（恢复为空）"
+fi
+
+echo "=== test_set_param_marks_needs_save ==="
+if diag_guard "setParam 脏区诊断"; then
+  # 同一次 run：setParam 在 toggle 演示之后执行，脏区条数独立于 needsSave 归因
+  assert_contains "BMW_KCM_PARAMS_DIRTY=1" "setParam 后参数脏区计数为 1"
+fi
+
+echo "=== test_broken_main_xml_skipped_not_fatal ==="
+if diag_guard "坏 main.xml 容错诊断"; then
+  BADFX="$PREFIX/fx-effects"
+  mkdir -p "$BADFX/kwin6_effect_fire/contents/config" "$BADFX/kwin6_effect_glitch/contents/config"
+  cp "$HOME/.local/share/kwin/effects/kwin6_effect_fire/metadata.json" "$BADFX/kwin6_effect_fire/" 2>/dev/null || \
+    cp "$HOME/.local/share/kwin/effects/kwin6_effect_fire/metadata.json.orig" "$BADFX/kwin6_effect_fire/metadata.json"
+  cp "$HOME/.local/share/kwin/effects/kwin6_effect_fire/contents/config/main.xml" "$BADFX/kwin6_effect_fire/contents/config/"
+  cp "$HOME/.local/share/kwin/effects/kwin6_effect_glitch/metadata.json" "$BADFX/kwin6_effect_glitch/" 2>/dev/null || true
+  # 截断的 XML（未闭合标签）：解析必须报错并返回空参数表，不得崩溃
+  printf '<kcfg><group name=""><entry name="Strength" type="Double"><default>2</default>' \
+    > "$BADFX/kwin6_effect_glitch/contents/config/main.xml"
+  run env BURN_WINDOW_CONFIG="$PREFIX/diag-randomrc" \
+          BURN_WINDOW_EFFECTS="$BADFX" \
+          BMW_KCM_DIAG_POOL=1 \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "坏 main.xml 不导致崩溃（诊断仍正常退出）"
+  BADMODEL="$(printf '%s' "$OUTPUT" | sed -n 's/^.*BMW_KCM_POOL_MODEL=//p' | head -1)"
+  if printf '%s' "$BADMODEL" | python3 -c '
+import json, sys
+pool = json.load(sys.stdin)
+glitch = next(p for p in pool if p["effectId"] == "kwin6_effect_glitch")
+assert glitch["params"] == [], f"坏 XML 应给出空参数表, 实际 {glitch['params']}"
+fire = next(p for p in pool if p["effectId"] == "kwin6_effect_fire")
+assert len(fire["params"]) > 0, "同一模型中正常成员不受坏成员影响"
+' 2>/dev/null; then
+    pass "坏 XML 成员 params 为空、正常成员不受影响"
+  else
+    fail "坏 XML 成员 params 为空、正常成员不受影响" "结构不符: ${BADMODEL:0:200}"
+  fi
+  assert_contains "main.xml" "stderr 含 main.xml 解析警告（失败不静默）"
+fi
+
+# ============================================================ 5. save 参数链路（Task 8）
+# DIAG_PARAMS 预设脏区 → DIAG_APPLY 走 save() 全链 → 断言落盘/去重/失败容错
+param_diag_guard() {
+  if [ ! -f "$KCM_DEST" ] || ! grep -qa "kcm_burnwindow" "$KCM_DEST" 2>/dev/null; then
+    skip "$1" "KCM 非本次构建产物（前置用例失败/SKIP）"
+    return 1
+  fi
+  command -v kcmshell6 >/dev/null 2>&1 || { skip "$1" "kcmshell6 不可用"; return 1; }
+  command -v kreadconfig6 >/dev/null 2>&1 || { skip "$1" "kreadconfig6 不可用"; return 1; }
+  return 0
+}
+
+echo "=== test_param_write_hits_effect_group ==="
+if param_diag_guard "参数落盘诊断"; then
+  cat > "$PREFIX/task8-randomrc" <<CFG
+[General]
+Pool=kwin6_effect_fire,kwin6_effect_doom
+Blacklist=
+ApplyScript=/bin/true
+CFG
+  rm -f "$PREFIX/task8-kwinrc"
+  run env BURN_WINDOW_CONFIG="$PREFIX/task8-randomrc" \
+          BMW_KCM_KWINRC="$PREFIX/task8-kwinrc" \
+          BMW_KCM_DIAG_APPLY=1 \
+          BMW_KCM_DIAG_PARAMS="kwin6_effect_fire:Duration:999,kwin6_effect_fire:Speed:1.5,kwin6_effect_doom:Size:42" \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "参数诊断正常退出"
+  assert_contains "BMW_KCM_PARAM_WRITE=kwin6_effect_fire:Duration:999" "PARAM_WRITE 诊断：fire Duration 走了落盘路径"
+  DUR="$(kreadconfig6 --file "$PREFIX/task8-kwinrc" --group Effect-kwin6_effect_fire --key Duration 2>/dev/null)"
+  assert_eq "$DUR" "999" "kwinrc [Effect-kwin6_effect_fire] Duration == 999（落盘可读）"
+  SPEED="$(kreadconfig6 --file "$PREFIX/task8-kwinrc" --group Effect-kwin6_effect_fire --key Speed 2>/dev/null)"
+  assert_eq "$SPEED" "1.5" "同组第二键 Speed == 1.5（小数串原样落盘）"
+fi
+
+echo "=== test_reconfigure_called_per_effect ==="
+if param_diag_guard "reconfigure 去重诊断"; then
+  RECONF_N="$(printf '%s' "$OUTPUT" | grep -c 'BMW_KCM_RECONFIGURE=')"
+  assert_eq "$RECONF_N" "2" "3 条参数（fire×2 + doom×1）→ 去重后恰好 2 次 reconfigure"
+fi
+
+echo "=== test_reconfigure_failure_keeps_apply_ok ==="
+if param_diag_guard "reconfigure 失败容错"; then
+  FAKEBIN="$PREFIX/fakebin"
+  mkdir -p "$FAKEBIN"
+  printf '#!/bin/sh\nexit 1\n' > "$FAKEBIN/qdbus6"
+  chmod +x "$FAKEBIN/qdbus6"
+  run env PATH="$FAKEBIN:$PATH" \
+          BURN_WINDOW_CONFIG="$PREFIX/task8-randomrc" \
+          BMW_KCM_KWINRC="$PREFIX/task8-kwinrc-fail" \
+          BMW_KCM_DIAG_APPLY=1 \
+          BMW_KCM_DIAG_PARAMS="kwin6_effect_fire:Duration:1234" \
+          timeout -k 5 30 kcmshell6 kcm_burnwindow
+  assert_exit_code_zero "qdbus6 失败不改变诊断退出码（apply 未被判失败）"
+  assert_contains "BMW_KCM_PARAM_WRITE=kwin6_effect_fire:Duration:1234" "失败场景参数仍先落盘（spec 5.1 顺序）"
+  assert_contains "reconfigureEffect" "reconfigure 失败警告已合并进 DIAG_APPLY_OUTPUT"
+  assert_contains "BMW_KCM_DIAG_APPLY_RUNNING=false" "applyRunning 归零（finishApply 唯一收口）"
+fi
+
+# ============================================================ 环境恢复
+echo
+echo "恢复环境：还原/移除测试期间写入的系统 KCM"
+restore_kcm
+
+# ---- 断言：测试开始前已存在的 KCM 必须原样保留（M-2）----
+echo "=== test_preexisting_kcm_is_preserved ==="
+if [ -n "$PRESET_FILE" ]; then
+  # 期望内容 = 用例 0 预置的占位文件：被覆盖后必须原样还原，而不是被删除
+  if cmp -s "$PRESET_FILE" "$KCM_DEST" 2>/dev/null; then
+    pass "测试开始前已存在的 KCM 被原样保留（未被删除）"
+  else
+    RC=1
+    fail "测试开始前已存在的 KCM 被原样保留（未被删除）" \
+      "目标不存在或内容与预置不符（正式安装的 KCM 会这样丢失）"
+  fi
+elif [ "$KCM_WAS_PRESENT" -eq 1 ]; then
+  if cmp -s "$KCM_BACKUP_DIR/kcm_burnwindow.so" "$KCM_DEST" 2>/dev/null; then
+    pass "测试开始前已存在的 KCM 被原样保留（未被删除）"
+  else
+    RC=1
+    fail "测试开始前已存在的 KCM 被原样保留（未被删除）" "未还原备份"
+  fi
+else
+  skip "测试开始前已存在的 KCM 被原样保留" "测试开始时目标不存在，且未成功预置"
+fi
+
+# 清理用例 0 的占位文件，使系统状态回到测试开始前
+cleanup_preset
+NOW_PRESENT=0
+[ -e "$KCM_DEST" ] && NOW_PRESENT=1
+assert_eq "$NOW_PRESENT" "$KCM_INITIAL_PRESENT" "测试后系统 KCM 存在状态与测试前一致（净影响为零）"
+
+teardown
+
+echo
+echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
+[ "$FAIL" -eq 0 ] || exit 1
+exit 0
