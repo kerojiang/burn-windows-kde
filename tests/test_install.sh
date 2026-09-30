@@ -463,6 +463,51 @@ else
   fail "KCM_DEST_OLD 定义为旧 systemsettings 落点" "未找到字面定义"
 fi
 
+echo "=== test_do_build_builds_kcm ==="
+# 根因（2026-09-30 实测，用户手动验收反馈「每个特效右边没有任何显示」）：
+# 新落点 .so 是 Task 4/5 版陈旧产物 —— nm -C 实测缺 toggleParticipating/
+# setParam/randomLoaded，QML 调用集只有 kcm.toggleBlacklist（勾=剔除的
+# 黑名单页），故 QML 的 visible: params.length > 0 恒假、参数入口不渲染。
+# 直接原因：install.sh 只在 :24 从 kcm/build/bin/ 取 KCM_SO，而 do_build()
+# 全函数仅 git clone + upstream/kwin/build.sh + tar 解包（grep 实证全脚本
+# 除 :24 外零处构建 KCM）→ 产物永不重建、不校验新鲜度，陈旧 .so 被原样装入。
+# 断言为静态（去注释后匹配命令词）：行为方案需真跑 upstream 全量构建
+# （19 特效 build.sh，分钟级）且 kcm/build 是仓库内固定路径、无 prefix 隔离，
+# 与 P1-6 同款取舍（该段注释记录了同类脆性废弃）。
+BUILD_BODY="$(sed -n '/^do_build() {/,/^}/p' "$INSTALL")"
+if [ -z "$BUILD_BODY" ]; then
+  fail "do_build 含 KCM 构建" "未提取到 do_build 函数体"
+else
+  # 仅代码行参与断言：注释里的设计说明不算调用
+  BUILD_CODE="$(printf '%s\n' "$BUILD_BODY" | grep -v '^[[:space:]]*#' || true)"
+  if printf '%s\n' "$BUILD_CODE" | grep -q 'kcm' \
+     && printf '%s\n' "$BUILD_CODE" | grep -qE 'cmake|ninja'; then
+    pass "do_build 构建 KCM"
+  else
+    fail "do_build 构建 KCM" "do_build 代码行未同时出现 kcm 与 cmake/ninja 构建命令"
+  fi
+
+  # KCM 构建必须位于 SKIP_BUILD early-return 之后 —— 否则 --skip-build 仍会
+  # 拖入 cmake 依赖，破坏该旗标语义（跳过克隆与构建、无构建工具机器可装）。
+  AFTER_SKIP="$(printf '%s\n' "$BUILD_BODY" | awk '/SKIP_BUILD.*return 0/{f=1;next} f{print}')"
+  AFTER_SKIP_CODE="$(printf '%s\n' "$AFTER_SKIP" | grep -v '^[[:space:]]*#' || true)"
+  if printf '%s\n' "$AFTER_SKIP_CODE" | grep -qE 'cmake|ninja'; then
+    pass "KCM 构建受 --skip-build 管辖"
+  else
+    fail "KCM 构建受 --skip-build 管辖" "KCM 构建不在 SKIP_BUILD early-return 之后（或未受其管辖）"
+  fi
+fi
+
+echo "=== test_kcm_installed_mode_matches_peers ==="
+# 可选项 A（用户批准一并修）：install -D -m 0644 使 .so 落成 rw-r--r--，
+# 而新落点同目录 16 个上游 .so 实测全为 rwxr-xr-x（755）。dlopen 不需 x 位、
+# 当前也能加载，但与系统插件惯例不一致 → 与同目录惯例对齐。
+SUDO_FUNC_CODE="$(sed -n '/^do_sudo_kcm() {/,/^}/p' "$INSTALL" | grep -v '^[[:space:]]*#' || true)"
+case "$SUDO_FUNC_CODE" in
+  *'install -D -m 0755'*) pass "KCM 安装 mode 为 0755（与同目录插件惯例一致）" ;;
+  *) fail "KCM 安装 mode 为 0755（与同目录插件惯例一致）" "do_sudo_kcm 未用 install -D -m 0755 安装 KCM_SO" ;;
+esac
+
 echo
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [ "$FAIL" -eq 0 ] || exit 1

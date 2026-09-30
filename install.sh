@@ -21,7 +21,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INJECT_PY="$ROOT/lib/inject.py"
 UPSTREAM_DIR="$ROOT/upstream"
 UPSTREAM_MIRROR="https://ghfast.top/https://github.com/Schneegans/Burn-My-Windows.git"
-KCM_SO="$ROOT/kcm/build/bin/plasma/kcms/systemsettings/kcm_burnwindow.so"
+KCM_BUILD_DIR="$ROOT/kcm/build"
+KCM_SO="$KCM_BUILD_DIR/bin/plasma/kcms/systemsettings/kcm_burnwindow.so"
 # KCM 落点必须是 kwin/effects/configs：占位特效 metadata 的 X-KDE-ConfigModule
 # 指向 kcm_burnwindow 时，KWin 按 id 只在该目录查找配置模块（spec 4.1，D8 单一入口）
 KCM_DEST="/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so"
@@ -212,6 +213,20 @@ do_build() {
   [ -n "$pkg" ] || die "构建产物 burn_my_windows_kwin6.tar.gz 未找到"
   mkdir -p "$EFFECTS_DIR"
   tar -xzf "$pkg" -C "$EFFECTS_DIR"
+
+  # KCM 也必须随安装构建：do_sudo_kcm 直接把 kcm/build/bin/ 的产物拷进系统
+  # 落点，不校验新鲜度 —— 2026-09-30 实测该缺口让陈旧 .so（缺 Task 6/7/8
+  # 符号 toggleParticipating/setParam/randomLoaded，只有 Task 4/5 的
+  # toggleBlacklist）被原样装入，聚合页每行参数入口恒不渲染。
+  # 位于 SKIP_BUILD early-return 之后：--skip-build 语义是「跳过克隆与
+  # 构建」，保持无构建工具的机器仍可安装（依赖闸 need cmake/ninja 同样受
+  # SKIP_BUILD 管辖，见 check_deps）。
+  log "构建 KCM（kcm/build）"
+  if [ ! -f "$KCM_BUILD_DIR/CMakeCache.txt" ]; then
+    cmake -S "$ROOT/kcm" -B "$KCM_BUILD_DIR" -G Ninja
+  fi
+  cmake --build "$KCM_BUILD_DIR"
+  [ -f "$KCM_SO" ] || die "KCM 构建产物未生成: $KCM_SO"
 }
 
 # ---------------------------------------------------------------- 占位特效
@@ -419,10 +434,10 @@ do_sudo_kcm() {
     fi
   fi
   if [ -n "${SUDO_PASSWORD:-}" ]; then
-    printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' install -D -m 0644 "$KCM_SO" "$KCM_DEST" || \
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' install -D -m 0755 "$KCM_SO" "$KCM_DEST" || \
       die "KCM 安装失败；已保留的用户级安装（特效注入 / kwinrc / apply 脚本）仍可用，配置未写入"
   else
-    sudo install -D -m 0644 "$KCM_SO" "$KCM_DEST" || \
+    sudo install -D -m 0755 "$KCM_SO" "$KCM_DEST" || \
       die "KCM 安装失败；已保留的用户级安装（特效注入 / kwinrc / apply 脚本）仍可用，配置未写入"
   fi
 }
