@@ -16,6 +16,8 @@
 #      落点两处都删（旧入口残留即双入口）
 #  10. 特效目录本身（install.sh do_build 的 tar 解包产物）+ 占位特效目录
 #      （不在池清单内）
+#  11. i18n 翻译 catalog（do_install_i18n 的 kcm_burnwindow.mo，用户级共享
+#      locale 目录，不随特效目录删除）
 #
 # 用法：
 #   ./uninstall.sh                  卸载真实安装
@@ -24,7 +26,7 @@
 #   ./uninstall.sh --dry-run        只列出将执行的操作，不落盘
 #
 # 环境变量：
-#   BURN_WINDOW_CONFIG / BURN_WINDOW_EFFECTS / BURN_WINDOW_KCM_DEST  覆盖对应路径
+#   BURN_WINDOW_CONFIG / BURN_WINDOW_EFFECTS / BURN_WINDOW_KCM_DEST / BURN_WINDOW_MO  覆盖对应路径
 #   SUDO_PASSWORD   提权凭据（仅经环境变量传入，不写入本脚本）
 set -euo pipefail
 
@@ -97,6 +99,9 @@ fi
 # 落点（旧入口，残留即双入口违反 D8）；均可经环境变量覆盖供测试隔离
 KCM_DEST="${BURN_WINDOW_KCM_DEST:-/usr/lib/qt6/plugins/kwin/effects/configs/kcm_burnwindow.so}"
 KCM_DEST_OLD="${BURN_WINDOW_KCM_DEST_OLD:-/usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_burnwindow.so}"
+# i18n catalog（install.sh do_install_i18n 产物）：与特效目录内 zh_CN 落点
+# （随特效目录整体删除覆盖）不同，该 mo 在共享 locale 目录须显式删除
+MO_FILE="${BURN_WINDOW_MO:-$HOME/.local/share/locale/zh_CN/LC_MESSAGES/kcm_burnwindow.mo}"
 
 # ---------------------------------------------------------------- 依赖检查
 # 必须在任何清理动作之前完成：kwinrc 清理依赖这两个命令，若缺失则宁可
@@ -175,6 +180,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   log "  7. 删除注入器目录: $LIBEXEC_DIR"
   log "  8. 删除 KCM 两落点: $KCM_DEST / $KCM_DEST_OLD"
   log "  9. 删除 ${#POOL_IDS[@]} 个特效目录（install.sh do_build 的 tar 解包产物）+ 占位目录"
+  log "  10. 删除 i18n catalog: $MO_FILE"
   exit 0
 fi
 
@@ -342,6 +348,14 @@ for id in "$PLACEHOLDER_ID"; do
     log "已删除占位特效目录: $id"
   fi
 done
+
+# ---------------------------------------------------------------- 10. i18n catalog
+# install.sh do_install_i18n 的 KCM 翻译产物（用户级共享 locale 目录），
+# 不随特效目录删除；rm -f 天然幂等，二次卸载无副作用
+if [ -e "$MO_FILE" ]; then
+  rm -f "$MO_FILE"
+  log "已删除 i18n catalog: $MO_FILE"
+fi
 
 # ---------------------------------------------------------------- 结果
 log "卸载完成（还原 $restored 个特效、清理池成员 ${#POOL_IDS[@]} 个）"

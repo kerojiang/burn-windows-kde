@@ -130,6 +130,14 @@ setup() {
   # `kwin6_effect_.*Enabled` 统计，否则会把用例 6 放置的非池条目
   # kwin6_effect_dialogsEnabled 误算为未清除的 BMW 条目
   POOL_IDS="$(kreadconfig6 --file "$CFG" --group General --key Pool 2>/dev/null | tr ',' ' ')"
+
+  # i18n catalog（install.sh do_install_i18n 的 KCM 翻译产物）：卸载必须对称
+  # 删除。真实落点 ~/.local/share/locale 被 test_kcm_qml 依赖（中文运行时断言），
+  # 测试用 BURN_WINDOW_MO 指向 prefix 内隔离路径验证删除逻辑（与
+  # BURN_WINDOW_KCM_DEST 同款策略）
+  export BURN_WINDOW_MO="$PREFIX/locale/zh_CN/LC_MESSAGES/kcm_burnwindow.mo"
+  mkdir -p "$(dirname "$BURN_WINDOW_MO")"
+  printf 'fake-mo-for-uninstall-test' > "$BURN_WINDOW_MO"
 }
 
 teardown() {
@@ -161,6 +169,7 @@ AFTER_DRY_ORIG="$(ls "$EFFECTS"/*/contents/code/main.js.orig 2>/dev/null | wc -l
 assert_eq "$AFTER_DRY_INJECT" "$INJECTED" "dry-run 后注入数不变"
 assert_eq "$AFTER_DRY_ORIG" "$ORIG_N" "dry-run 后 .orig 数不变"
 if [ -f "$CFG" ]; then pass "dry-run 后配置仍在"; else fail "dry-run 后配置仍在" "配置被删除"; fi
+if [ -f "$BURN_WINDOW_MO" ]; then pass "dry-run 后 i18n mo 仍在"; else fail "dry-run 后 i18n mo 仍在" "mo 被 dry-run 删除"; fi
 if grep -q 'kwin6_effect_fireEnabled' "$KWINRC" 2>/dev/null; then
   pass "dry-run 后 kwinrc BMW 条目仍在"
 else
@@ -217,6 +226,7 @@ assert_exists "$PREFIX/burn-window-apply-config.sh" "apply 脚本已删除"
 assert_exists "$PREFIX/libexec" "libexec 目录已删除（inject.py + arbiter.js）"
 assert_exists "$FAKE_KCM" "KCM 产物已删除"
 assert_exists "$FAKE_KCM_OLD" "KCM 旧 systemsettings 落点已删除（防双入口）"
+assert_exists "$BURN_WINDOW_MO" "i18n catalog mo 已删除（do_install_i18n 产物）"
 
 LEFT_KEYS=""
 for id in $POOL_IDS; do
