@@ -16,6 +16,36 @@ import org.kde.kquickcontrols as KQuickControls
 KCMUtils.SimpleKCM {
     id: burnRoot
     title: i18n("Burn Window")
+    // 页面高度固定 ~900（2026-09-30 批准的需求4设计）：不 fill 视口（fill 时
+    // page=1319、收起内容 854 → 底部 446 空白）。900 = 854 + 余量 46，展开
+    // 参数超出 → 页内滚动；若被容器锚定覆盖则切备选（解除锚定后设高）。
+    height: 900
+    // 容器（kcmshell6/systemsettings）布局时显式 setHeight(视口高)，会断开
+    // QML 静态绑定 —— 实测锚定已解除、Layout 约束已设，onCompleted 时
+    // h=900 但下一帧仍被改回 1319。用 onHeightChanged 拦截拉回：容器设高
+    // → 本 handler 延一拍设回 900；900 自身的变化被 if 挡住不递归。
+    // height 拦截机制的运行证据：容器每次 setHeight(视口) → 这里打一条 →
+    // callLater 拉回 900。启动收敛序列（实测）：-46→852→1319→900→1318→
+    // 1300→900。日后若"页面又变高"，看此序列即可判断是容器设的还是拦截失效。
+    onHeightChanged: {
+        console.log("BMW_KCM_HSEQ h=" + height)
+        if (height !== 900) {
+            Qt.callLater(function () { burnRoot.height = 900 })
+        }
+    }
+    // 容器若用 Layout 管理，这两个与 height: 900 一起才锁得住；
+    // 非 Layout 管理时被忽略，无副作用。
+    Layout.fillHeight: false
+    Layout.minimumHeight: 900
+    Layout.maximumHeight: 900
+
+    // 初始 GEOM 探针：延 500ms 等 height 收敛（见 onHeightChanged 的 HSEQ）
+    Timer {
+        id: initialGeomTimer
+        interval: 500
+        repeat: false
+        onTriggered: rootColumn.dumpGeom("initial")
+    }
 
     // Color 参数双格式归一（Ruling-10）：kwinrc 现值的 "r,g,b" 十进制 → #RRGGBB；
     // #hex（main.xml default 的 #AARRGGBB、KWin 现值的 #RRGGBB）原样返回。
@@ -101,9 +131,9 @@ KCMUtils.SimpleKCM {
             onTriggered: previewWindow.close()
         }
 
-        Component.onCompleted: {
-            Qt.callLater(function () { rootColumn.dumpGeom("initial") })
-        }
+        // "initial" 探针已移至 burnRoot 的 Component.onCompleted（解容器
+        // 垂直锚定之后）—— 子项 onCompleted 早于父项，留在这里会读到锚定
+        // 解除前的 page（实测 1319 而非 900）。toggle: 探针仍在齿轮 onClicked。
 
         QQC2.Label {
             Layout.fillWidth: true
@@ -364,6 +394,17 @@ KCMUtils.SimpleKCM {
     }
 
     Component.onCompleted: {
+        // 备选方案（2026-09-30 实测：静态 height: 900 被容器锚定覆盖，
+        // GEOM initial page=1319 不变）：解除容器对本页的垂直锚定 ——
+        // anchors.fill 组合的 top/bottom 拆掉，left/right 保留 → 宽度仍
+        // 随窗口变化，高度交还给静态 height: 900。随后（事件循环下一拍、
+        // 布局重算后）再打 initial 探针。
+        anchors.top = undefined
+        anchors.bottom = undefined
+        // 初始探针延到布局收敛后：容器 setHeight(视口) 与 onHeightChanged
+        // 拦截拉回要数拍才稳（HSEQ 实测 -46→852→1319→900→1318→1300→900），
+        // 同步 callLater 打到的是中间态 1319。500ms 后稳定值是 900。
+        initialGeomTimer.start()
         // 诊断探针：证明 QML 已加载，并主动输出自身 QRC 路径。
         // 不依赖 Qt 的日志格式 —— 实测 Qt6 的 console.log 写入 journal 时
         // 不带源路径前缀，无法从日志中反推文件位置。

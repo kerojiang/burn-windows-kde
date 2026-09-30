@@ -359,6 +359,24 @@ else
   fail "窗口标题携带 BMW_PREVIEW: 协议前缀" "main.qml 缺协议字面量"
 fi
 
+# ================================================================ 10. 页面高度限制（需求4，bounded 设计已批准）
+# 用户批准：动效页可视区域固定 ~900（当前 fill 视口 1300.64），收起态内容
+# 854 + 余量 ~46；展开参数超出 900 → 页内滚动。系统设置窗口不动。
+echo "=== test_page_height_limit ==="
+# 静态：burnRoot 上的固定高度声明（900-999，容"900 左右"微调）
+if grep -A6 'id: burnRoot' "$KCM_SRC/ui/main.qml" | grep -qE '^[[:space:]]*height: 9[0-9][0-9][[:space:]]*$'; then
+  pass "burnRoot 声明固定高度 ~900"
+else
+  fail "burnRoot 声明固定高度 ~900" "id: burnRoot 后 6 行内无 height: 9xx"
+fi
+# 运行时：GEOM 实测 page —— 若容器 anchors.fill 覆盖了显式 height，
+# 此断言会失败并给出实测值 → 按设计启用备选（解除锚定后设高）
+if printf '%s' "$OUTPUT" | grep -q 'BMW_KCM_GEOM initial page=900'; then
+  pass "GEOM 实测 page=900（高度限制穿透容器生效）"
+else
+  fail "GEOM 实测 page=900" "实测: $(printf '%s' "$OUTPUT" | grep -o 'GEOM initial page=[0-9.]*' | head -1)"
+fi
+
 # ---------------------------------------------------------------- 环境恢复
 echo
 echo "恢复环境：还原/移除测试期间写入的系统 KCM"
