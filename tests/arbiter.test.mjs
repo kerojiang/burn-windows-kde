@@ -170,6 +170,29 @@ test("预览协议：非 BMW_PREVIEW 前缀 → null（用户窗口不误触发�
   assert.equal(bmwPreviewTarget(null, ["kwin6_effect_fire"]), null);
 });
 
+test("预览协议：Qt applicationDisplayName 追加后缀（KCM 实测 ' — 系统设置'）仍命中目标", () => {
+  // 2026-09-30 根因实证（CAPTION_PROBE journal）：systemsettings 进程
+  // setApplicationDisplayName("系统设置") 后 Qt 把 displayName 追加到窗口
+  // title，KWin 收到的 caption 为 "BMW_PREVIEW:kwin6_effect_fire — 系统设置"，
+  // 直接 slice 校验 pool 必然失配 → 回落随机（用户可见：预览播随机特效）
+  assert.equal(
+    bmwPreviewTarget("BMW_PREVIEW:kwin6_effect_fire — 系统设置", ["kwin6_effect_fire"]),
+    "kwin6_effect_fire",
+  );
+});
+
+test("预览协议：池 id 互为前缀时按精确 id 边界匹配（带后缀）", () => {
+  const pool = ["kwin6_effect_fire", "kwin6_effect_fire_extra"];
+  assert.equal(
+    bmwPreviewTarget("BMW_PREVIEW:kwin6_effect_fire_extra — 系统设置", pool),
+    "kwin6_effect_fire_extra",
+  );
+  assert.equal(
+    bmwPreviewTarget("BMW_PREVIEW:kwin6_effect_fire — 系统设置", pool),
+    "kwin6_effect_fire",
+  );
+});
+
 test("预览协议：目标在 blacklist 内仍强制播放（绕过 eligible 校验）", () => {
   // 调研结论：arbiter.js:47 的 eligible.indexOf(winner) 复用校验会把出池
   // winner 踢回随机，预览一个已剔除的特效必须绕过它
