@@ -7,8 +7,10 @@ import org.kde.kquickcontrols as KQuickControls
 // 随机特效聚合页（D1-D7）。
 //
 // 参与语义（D3，不可反）：勾选 = 参与随机；取消勾选 = 剔除。默认 19 项全部勾选。
-// 状态由 kcm.pool 的 participating 驱动 —— 黑名单反转映射在 C++ 侧完成，
-// 本页只操作参与语义（kcm.toggleParticipating）。
+// 状态由 kcm.blacklist 驱动（带 NOTIFY blacklistChanged；2026-09-30 起
+// checked 绑定它而非 pool 的 participating —— 后者是 loadConfig 的一次性
+// 快照，全选按钮程序化批量改 19 项时不会触发它更新，界面不刷新）。
+// 写入口仍是 C++ 侧的参与语义反转映射（kcm.toggleParticipating）。
 // 开关（D4/D6）：只读徽标展示 kcm.randomLoaded（唯一真相源是 KWin
 // loadedEffects），页面不提供任何 toggle，操作回归特效页的占位特效。
 KCMUtils.SimpleKCM {
@@ -61,6 +63,44 @@ KCMUtils.SimpleKCM {
                       + " colImplicit=" + rootColumn.implicitHeight
                       + " n=" + rootColumn.children.length)
         }
+
+        // 预览窗口保持时长 = 该特效 Duration（params 由 parseMainXml 带出，
+        // 含 kwinrc 现值与 main.xml 默认值），缺失或非法回落 1500ms。
+        // 保持这么久是为了让 open 动画播完，随后 close() 触发 close 动画。
+        function previewDuration(params) {
+            for (var i = 0; i < params.length; i++) {
+                if (params[i].name === "Duration") {
+                    var v = Number(params[i].value)
+                    if (!isNaN(v) && v > 0) {
+                        return v
+                    }
+                }
+            }
+            return 1500
+        }
+
+        // 临时预览窗口：真实顶层 toplevel —— ApplicationWindow 默认不带
+        // Qt.Popup flags，normalWindow=true，因此不会被 main.js:186-218 的
+        // hasDecoration/popupWindow/classBlacklist 判定过滤掉（若用 Popup flags
+        // 会变 XdgPopupWindow → normalWindow=false → 窗口开了也不播动画）。
+        // title 由预览按钮写入 "BMW_PREVIEW:<effectId>"，注入到特效的
+        // lib/arbiter.js bmwPreviewTarget 识别后强制该特效当选 ——
+        // KWin 无 playEffect/previewEffect API（spec §8 决策记录调研实证）。
+        QQC2.ApplicationWindow {
+            id: previewWindow
+            visible: false
+            width: 520
+            height: 360
+            title: ""
+        }
+
+        // 到点关闭预览窗口 → 触发 close 动画
+        Timer {
+            id: previewCloseTimer
+            repeat: false
+            onTriggered: previewWindow.close()
+        }
+
         Component.onCompleted: {
             Qt.callLater(function () { rootColumn.dumpGeom("initial") })
         }
@@ -159,6 +199,30 @@ KCMUtils.SimpleKCM {
                             // 诊断探针：渲染与参与语义写入 journal，供无 GUI 环境断言
                             console.log("BMW_KCM_ITEM " + effectRoot.modelData.effectId + " checked=" + checked)
                             console.log("BMW_KCM_PARTICIPATING " + effectRoot.modelData.effectId + "=" + checked)
+                        }
+                    }
+
+                    // 预览按钮：点开临时窗口播一次该特效后自动关闭。
+                    // 图标 media-playback-start（breeze 图标主题实测存在）；
+                    // tooltip 走 ToolTip attached property —— ToolButton 没有
+                    // tooltip 属性（2026-09-30 实测写 tooltip.text 会
+                    // "Cannot assign to non-existent property" 打挂整个 QML）。
+                    QQC2.ToolButton {
+                        id: previewButton
+                        icon.name: "media-playback-start"
+                        QQC2.ToolTip.visible: hovered
+                        QQC2.ToolTip.text: i18n("预览此特效")
+                        QQC2.ToolTip.delay: 500
+                        onClicked: {
+                            previewWindow.title = "BMW_PREVIEW:" + effectRoot.modelData.effectId
+                            previewCloseTimer.interval = rootColumn.previewDuration(effectRoot.modelData.params)
+                            previewWindow.show()
+                            previewCloseTimer.restart()
+                        }
+                        Component.onCompleted: {
+                            // 探针：按钮形态与覆盖数进 journal，供无 GUI 断言
+                            console.log("BMW_KCM_PREVIEW " + effectRoot.modelData.effectId
+                                      + " icon=" + icon.name)
                         }
                     }
 

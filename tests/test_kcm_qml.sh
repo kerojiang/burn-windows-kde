@@ -345,6 +345,20 @@ else
   fail "勾选绑定走 kcm.blacklist（NOTIFY 驱动，批量改可刷新）" "checked 未绑定 blacklist"
 fi
 
+# ================================================================ 9. 预览按钮（B plan Task 3）
+# 每行齿轮左侧一个纯图标预览按钮；点击开临时窗口播一次该特效。
+# 协议格式 BMW_PREVIEW:<effectId> 由 lib/arbiter.js 的 bmwPreviewTarget 消费。
+echo "=== test_preview_button ==="
+assert_contains "BMW_KCM_PREVIEW kwin6_effect_fire icon=media-playback-start" "fire 预览按钮（纯图标 media-playback-start）"
+PREVIEW_N="$(printf '%s' "$OUTPUT" | grep -c 'BMW_KCM_PREVIEW ')"
+assert_eq "$PREVIEW_N" "19" "预览按钮渲染数 == 19"
+# 窗口标题协议必须在源码里（Task 4 的 e2e 依赖该字面量格式）
+if grep -q 'BMW_PREVIEW:' "$KCM_SRC/ui/main.qml"; then
+  pass "窗口标题携带 BMW_PREVIEW: 协议前缀"
+else
+  fail "窗口标题携带 BMW_PREVIEW: 协议前缀" "main.qml 缺协议字面量"
+fi
+
 # ---------------------------------------------------------------- 环境恢复
 echo
 echo "恢复环境：还原/移除测试期间写入的系统 KCM"
